@@ -4,6 +4,18 @@
     "type": "bool",
     "default": true
   },
+  "enable_llm_tool": {
+    "description": "AI 识别是否生图",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后机器人不再自动判断/调用 doubao_draw，只有 /draw 能生图；保存后重载插件生效"
+  },
+  "ai_optimize_prompt": {
+    "description": "AI 优化提示词",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后 /draw 提交前会先用当前对话模型优化一次提示词，会增加耗时"
+  },
   "default_ratio": {
     "description": "默认画面比例",
     "type": "string",

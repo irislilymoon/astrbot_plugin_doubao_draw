@@ -86,7 +86,9 @@ class DoubaoDrawPlugin(Star):
         self._pending_code: dict[str, float] = {}
         self._pending_refs: dict[str, tuple[float, list[bytes]]] = {}
         self._watchdog_task: asyncio.Task | None = None
+        self._llm_switch_task: asyncio.Task | None = None
         self._start_watchdog_if_needed()
+        self._schedule_llm_tool_switch()
 
     # ---------------- 指令 ----------------
 
@@ -124,6 +126,9 @@ class DoubaoDrawPlugin(Star):
 
         refs = await self._collect_refs(event)
         self._last_at[user_id] = time.monotonic()
+        if self.config.get("ai_optimize_prompt", False):
+            yield event.plain_result("正在用 AI 优化提示词…")
+            prompt = await self._optimize_prompt(event, prompt, ratio, bool(refs))
         yield event.plain_result(
             "正在生成（已带上参考图），稍等…" if refs else "正在生成，稍等…"
         )
@@ -565,6 +570,9 @@ class DoubaoDrawPlugin(Star):
             prompt(string): 画面描述，尽量具体
             ratio(string): 画面比例，可选 1:1、3:4、4:3、16:9、9:16，留空使用默认
         """
+        if not self.config.get("enable_llm_tool", True):
+            yield event.plain_result("AI 识别生图已关闭，请用 /draw 触发。")
+            return
         if not self.config.get("enabled", True):
             return
         user_id = str(event.get_sender_id())
@@ -599,6 +607,78 @@ class DoubaoDrawPlugin(Star):
             yield event.plain_result("这次没有生成出图片，请稍后再试。")
 
     # ---------------- 内部 ----------------
+
+    def _schedule_llm_tool_switch(self):
+        try:
+            self._llm_switch_task = asyncio.create_task(self._apply_llm_tool_switch())
+        except RuntimeError:
+            self._llm_switch_task = None
+
+    async def _apply_llm_tool_switch(self):
+        await asyncio.sleep(2.5)
+        active = bool(self.config.get("enable_llm_tool", True)) and bool(
+            self.config.get("enabled", True)
+        )
+        try:
+            if active:
+                ok = await self.context.activate_llm_tool_async("doubao_draw")
+            else:
+                ok = await self.context.deactivate_llm_tool_async("doubao_draw")
+            logger.info(
+                f"[doubao_draw] AI 识别生图工具：{'启用' if active else '停用'}（{ok}）"
+            )
+        except Exception as e:
+            logger.warning(f"[doubao_draw] 应用 AI 识别开关失败：{e}")
+
+    async def _optimize_prompt(
+        self, event: AstrMessageEvent, prompt: str, ratio: str, has_refs: bool
+    ) -> str:
+        try:
+            provider = await self.context.get_using_provider_async(
+                umo=event.unified_msg_origin
+            )
+        except Exception as e:
+            logger.warning(f"[doubao_draw] 获取 LLM Provider 失败：{e}")
+            return prompt
+        if provider is None:
+            logger.warning("[doubao_draw] 没有可用 LLM Provider，跳过提示词优化")
+            return prompt
+
+        system = (
+            "你是生图提示词优化器。把用户的描述改写成适合图像生成模型的具体提示词。"
+            "只输出优化后的提示词，不要解释、不要标题、不要引号。"
+            "保留用户原意、必须出现的文字、需要修改的部分和风格要求，不要新增无关主体。"
+        )
+        if has_refs:
+            system += "这是基于参考图的改图，必须保持原图主体、构图和比例，只改用户要求的部分。"
+        user_prompt = prompt
+        if ratio:
+            user_prompt += f"\n（画面比例 {ratio} 由程序附加，不要在输出中写比例）"
+
+        try:
+            resp = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=user_prompt,
+                    contexts=[],
+                    system_prompt=system,
+                ),
+                timeout=20,
+            )
+            text = (getattr(resp, "completion_text", "") or "").strip()
+        except Exception as e:
+            logger.warning(f"[doubao_draw] 提示词优化失败，使用原文：{e}")
+            return prompt
+
+        text = re.sub(r"^```(?:text)?\s*|\s*```$", "", text, flags=re.I | re.S).strip()
+        text = re.sub(
+            r"^(?:优化后的?提示词|提示词|prompt)\s*[:：]\s*", "", text, flags=re.I
+        ).strip()
+        text = text.strip('"“”\'')
+        text = re.sub(r"\s*画面比例\s*\d+\s*[:：]\s*\d+\s*$", "", text).strip()
+        if len(text) < 2:
+            return prompt
+        logger.info(f"[doubao_draw] AI 优化提示词：{text[:80]}")
+        return text[:1500]
 
     async def _collect_refs(self, event: AstrMessageEvent) -> list[bytes]:
         uid = str(event.get_sender_id())
@@ -688,6 +768,15 @@ class DoubaoDrawPlugin(Star):
             task.cancel()
             try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        llm_task = self._llm_switch_task
+        if llm_task:
+            llm_task.cancel()
+            try:
+                await llm_task
             except asyncio.CancelledError:
                 pass
             except Exception:

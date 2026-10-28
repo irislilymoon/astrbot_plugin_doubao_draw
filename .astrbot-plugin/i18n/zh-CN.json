@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "display_name": "豆包生图"
+  },
+  "pages": {
+    "vnc": {
+      "title": "VNC 调试",
+      "description": "查看浏览器画面并直接操作；VNC 缺失时自动补齐。"
+    }
+  }
+}

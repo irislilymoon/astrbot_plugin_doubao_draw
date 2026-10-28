@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VNC 调试</title>
+<style>
+  :root {
+    --bg: #0f1220;
+    --panel: #171b2d;
+    --text: #e8eaf2;
+    --muted: #8b93ab;
+    --line: #2a3050;
+    --ok: #39d98a;
+    --warn: #f7b955;
+    --err: #ff6b6b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f8;
+      --panel: #ffffff;
+      --text: #1b2030;
+      --muted: #67708a;
+      --line: #dfe4f2;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  .title { font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); min-width: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  .status span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1; }
+  button {
+    appearance: none; border: 1px solid var(--line); background: transparent;
+    color: var(--text); padding: 6px 11px; border-radius: 8px; cursor: pointer;
+    font: inherit; white-space: nowrap;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: #4f7cff; border-color: #4f7cff; color: #fff; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .frame-wrap { flex: 1; min-height: 0; background: #000; position: relative; }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: var(--muted); padding: 24px; text-align: center;
+  }
+  .placeholder.hidden { display: none; }
+  .placeholder a { color: #7ea0ff; word-break: break-all; }
+  .placeholder code {
+    display: block; max-width: min(900px, 90vw); color: var(--text);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; word-break: break-all; user-select: all;
+  }
+  @media (max-width: 760px) {
+    .hint { display: none; }
+    .bar { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div class="title">VNC 调试</div>
+    <div class="status"><i id="dot" class="dot"></i><span id="statusText">检测中…</span></div>
+    <div class="spacer"></div>
+    <span class="hint">VNC 无密码，仅限内网/本机</span>
+    <button id="btnEnsure" class="primary">启动 / 修复 VNC</button>
+    <button id="btnRefresh">重新检测</button>
+    <button id="btnReconnect">重新连接</button>
+    <button id="btnCopy">复制直连地址</button>
+  </div>
+  <div class="frame-wrap">
+    <iframe id="frame" title="VNC" allow="clipboard-read; clipboard-write"></iframe>
+    <div id="placeholder" class="placeholder">
+      <div id="placeholderText">正在准备 VNC…</div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const dot = document.getElementById("dot");
+  const statusText = document.getElementById("statusText");
+  const frame = document.getElementById("frame");
+  const placeholder = document.getElementById("placeholder");
+  const placeholderText = document.getElementById("placeholderText");
+  const btnEnsure = document.getElementById("btnEnsure");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const btnReconnect = document.getElementById("btnReconnect");
+  const btnCopy = document.getElementById("btnCopy");
+  let lastEmbedUrl = "";
+  let directUrl = "";
+  let loading = false;
+
+  function setStatus(text, kind) {
+    statusText.textContent = text;
+    dot.className = "dot" + (kind ? " " + kind : "");
+  }
+
+  function unwrap(resp) {
+    if (!resp) return {};
+    return resp.data || resp.result || resp;
+  }
+
+  async function waitBridge(ms) {
+    const deadline = Date.now() + (ms || 4000);
+    while (Date.now() < deadline) {
+      const b = window.AstrBotPluginView || window.AstrBotPluginPage;
+      if (b) return b;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  }
+
+  async function call(path, method) {
+    const bridge = await waitBridge(4000);
+    if (!bridge) throw new Error("插件页桥接未加载，请刷新页面");
+    if (bridge.ready) {
+      await Promise.race([
+        bridge.ready(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("插件页桥接未就绪")), 6000)),
+      ]);
+    }
+    if (method === "POST" && bridge.apiPost) return await bridge.apiPost(path, {});
+    if (bridge.apiGet) return await bridge.apiGet(path, {});
+    throw new Error("插件页桥接不支持 API");
+  }
+
+  function hostName() {
+    return location.hostname || "127.0.0.1";
+  }
+
+  function directVncUrl(st) {
+    if (st.public_url) return st.public_url;
+    const proto = location.protocol === "https:" ? "https:" : "http:";
+    const viewer = st.viewer_path || "vnc.html";
+    const u = new URL(`${proto}//${hostName()}:${st.web_port || 6080}/${viewer}`);
+    u.searchParams.set("autoconnect", "1");
+    u.searchParams.set("resize", "scale");
+    return u.toString();
+  }
+
+  function embedVncUrl(st) {
+    const proto = location.protocol === "https:" ? "https:" : "http:";
+    const viewer = st.embed_viewer || "vnc_lite.html";
+    const u = new URL(`${proto}//${hostName()}:${st.embed_port || 6081}/${viewer}`);
+    u.searchParams.set("host", hostName());
+    u.searchParams.set("port", String(st.web_port || 6080));
+    u.searchParams.set("path", "websockify");
+    u.searchParams.set("autoconnect", "1");
+    u.searchParams.set("resize", "scale");
+    return u.toString();
+  }
+
+  function showPlaceholder(text, st) {
+    placeholder.classList.remove("hidden");
+    placeholderText.textContent = text;
+    while (placeholderText.nextSibling) {
+      placeholder.removeChild(placeholderText.nextSibling);
+    }
+    if (st) {
+      const code = document.createElement("code");
+      code.textContent = directUrl;
+      placeholder.appendChild(code);
+      const a = document.createElement("a");
+      a.href = directUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "在新窗口打开直连 VNC";
+      placeholder.appendChild(a);
+    }
+    if (lastEmbedUrl) {
+      frame.removeAttribute("src");
+      lastEmbedUrl = "";
+    }
+  }
+
+  function render(st) {
+    directUrl = directVncUrl(st);
+    btnCopy.dataset.url = directUrl;
+    if (!st.ready) {
+      setStatus(st.error || "VNC 未就绪", "err");
+      showPlaceholder(st.error || "VNC 服务未启动，点“启动 / 修复 VNC”。", st);
+      return;
+    }
+    if (!st.embed_ready) {
+      setStatus("VNC 已就绪，嵌入服务未启动", "warn");
+      showPlaceholder("VNC 本体已就绪，但插件页嵌入视图未启动。点“启动 / 修复 VNC”补齐，或复制地址在新窗口打开。", st);
+      return;
+    }
+    const embed = embedVncUrl(st);
+    if (location.protocol === "https:" && embed.startsWith("http:")) {
+      setStatus("HTTPS 面板无法嵌入 HTTP VNC", "err");
+      showPlaceholder("当前面板是 HTTPS，浏览器会拦截 HTTP 的 VNC 嵌入。请用 HTTP 打开面板，或给 VNC 配 HTTPS 反向代理。", st);
+      return;
+    }
+    setStatus("VNC 已就绪", "ok");
+    placeholder.classList.add("hidden");
+    if (lastEmbedUrl !== embed) {
+      frame.src = embed;
+      lastEmbedUrl = embed;
+    }
+  }
+
+  async function refresh(ensure) {
+    if (loading) return;
+    loading = true;
+    btnEnsure.disabled = true;
+    try {
+      setStatus(ensure ? "正在启动 VNC…" : "检测中…");
+      let st = unwrap(await call("vnc/status", "GET"));
+      if (ensure && (!st.ready || !st.embed_ready)) {
+        st = unwrap(await call("vnc/ensure", "POST"));
+      }
+      render(st);
+      if (ensure && (!st.ready || !st.embed_ready) && !st.error) {
+        setTimeout(() => refresh(false), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus("VNC 检测失败", "err");
+      showPlaceholder("检测失败：" + (e && e.message ? e.message : e), null);
+    } finally {
+      loading = false;
+      btnEnsure.disabled = false;
+    }
+  }
+
+  btnEnsure.addEventListener("click", () => refresh(true));
+  btnRefresh.addEventListener("click", () => refresh(false));
+  btnReconnect.addEventListener("click", () => {
+    if (!lastEmbedUrl) {
+      refresh(true);
+      return;
+    }
+    const base = lastEmbedUrl;
+    lastEmbedUrl = "";
+    frame.src = base + (base.includes("?") ? "&" : "?") + "_t=" + Date.now();
+    lastEmbedUrl = frame.src;
+  });
+  btnCopy.addEventListener("click", async () => {
+    const url = btnCopy.dataset.url || directUrl;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      const old = btnCopy.textContent;
+      btnCopy.textContent = "已复制";
+      setTimeout(() => (btnCopy.textContent = old), 1200);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e2) {}
+      ta.remove();
+    }
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => refresh(true));
+  } else {
+    refresh(true);
+  }
+})();
+</script>
+</body>
+</html>

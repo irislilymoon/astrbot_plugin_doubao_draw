@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.log
+profile/
+out/
+vnc_logs/
+daily_count.json
+.DS_Store
+Thumbs.db

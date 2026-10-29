@@ -79,12 +79,6 @@
     "type": "string",
     "default": "https://www.doubao.com/chat/"
   },
-  "allow_any_url": {
-    "description": "允许 /open 打开任意网址",
-    "type": "bool",
-    "default": false,
-    "hint": "关闭时只允许 doubao.com 域名，避免浏览器被当成通用代理"
-  },
   "browser_watchdog": {
     "description": "浏览器窗口兜底自愈",
     "type": "bool",

@@ -705,14 +705,23 @@ class DoubaoWeb:
     # ---------- 远程操控浏览器 ----------
 
     async def screenshot(self) -> str:
+        """截当前页面，不做任何跳转。"""
         page = await self.browser.page()
         async with self.browser.lock:
-            await self._ensure_page(page)
             path = str(self.store.new_path(".png"))
             await page.screenshot(path=path, full_page=False)
             return path
 
+    async def go_chat(self) -> str:
+        """无条件回到豆包对话页。"""
+        page = await self.browser.page()
+        async with self.browser.lock:
+            await page.goto(self.chat_url, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2.0)
+            return page.url
+
     async def _ensure_page(self, page):
+        """不在豆包域名时强制回对话页。截图/点击/输入已不再调用，需要时手动用。"""
         if "doubao.com" not in (page.url or ""):
             await self._open_chat(page)
 
@@ -734,7 +743,6 @@ class DoubaoWeb:
     async def click_target(self, target: str) -> str:
         page = await self.browser.page()
         async with self.browser.lock:
-            await self._ensure_page(page)
             loc = None
             if target[:1] in "#.[/":
                 try:
@@ -759,7 +767,6 @@ class DoubaoWeb:
     async def type_text(self, text: str) -> str:
         page = await self.browser.page()
         async with self.browser.lock:
-            await self._ensure_page(page)
             loc = await self._first_visible(page, S.INPUT_SELECTORS)
             if loc is None:
                 return "页面上没找到可输入的框"
@@ -771,7 +778,6 @@ class DoubaoWeb:
     async def press_key(self, key: str) -> str:
         page = await self.browser.page()
         async with self.browser.lock:
-            await self._ensure_page(page)
             await page.keyboard.press(key)
             await asyncio.sleep(1.0)
             return "ok"

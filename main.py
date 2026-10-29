@@ -14,7 +14,6 @@ import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlparse
 
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -38,6 +37,14 @@ import dd_vnc  # noqa: E402
 
 RATIO_RE = re.compile(r"^(\d{1,2}:\d{1,2})[\s,，、]+(.+)$", re.S)
 CMD_RE = re.compile(r"^[/!.]?\s*(?:doubao_draw|draw|绘图|画图)\s*", re.I)
+
+
+def _cmd(*names: str):
+    """注册指令并带别名；AstrBot 版本不支持 alias 参数时退回只注册主名。"""
+    try:
+        return filter.command(names[0], alias=set(names[1:]))
+    except TypeError:
+        return filter.command(names[0])
 
 
 @register(
@@ -92,9 +99,9 @@ class DoubaoDrawPlugin(Star):
 
     # ---------------- 指令 ----------------
 
-    @filter.command("draw")
+    @_cmd("draw", "画图", "绘图")
     async def draw(self, event: AstrMessageEvent):
-        """用豆包生图。用法：/draw [比例] 画面描述"""
+        """用豆包生图。用法：/draw [比例] 画面描述（/画图、/绘图 同义）"""
         self._start_watchdog_if_needed()
         event.should_call_llm(False)
         if not self.config.get("enabled", True):
@@ -107,6 +114,8 @@ class DoubaoDrawPlugin(Star):
 
         ratio, prompt = self._split_ratio(text)
         prompt = (prompt or text).strip()
+        # 指令里没写比例时，用配置里的 default_ratio 兜底
+        ratio = ratio or str(self.config.get("default_ratio") or "").strip()
         if not prompt:
             yield event.plain_result(
                 "用法：/draw [比例] 描述\n例如：/draw 16:9 赛博朋克城市夜景"
@@ -403,7 +412,7 @@ class DoubaoDrawPlugin(Star):
 
     @filter.command("shot")
     async def shot(self, event: AstrMessageEvent):
-        """截当前浏览器画面。"""
+        """截当前浏览器画面，不跳转，停在哪页截哪页。"""
         if not self._is_admin(event):
             yield event.plain_result("只有管理员能操控浏览器。")
             return
@@ -413,6 +422,20 @@ class DoubaoDrawPlugin(Star):
             yield event.plain_result(f"截图失败：{e}")
             return
         yield event.image_result(path)
+
+    @_cmd("doubao", "豆包")
+    async def doubao_home(self, event: AstrMessageEvent):
+        """回到豆包对话页。用法：/doubao"""
+        if not self._is_admin(event):
+            yield event.plain_result("只有管理员能操控浏览器。")
+            return
+        yield event.plain_result("正在回到豆包对话页…")
+        try:
+            url = await self.doubao.go_chat()
+        except Exception as e:
+            yield event.plain_result(f"打开豆包页失败：{e}")
+            return
+        yield event.plain_result(f"已回到：{url}")
 
     @filter.command("where")
     async def where(self, event: AstrMessageEvent):
@@ -436,11 +459,7 @@ class DoubaoDrawPlugin(Star):
         raw = (event.message_str or "").strip()
         body = re.sub(r"^[/!.]?\s*open\s*", "", raw, count=1, flags=re.I).strip()
         if not body.startswith("http"):
-            yield event.plain_result("用法：/open https://www.doubao.com/chat/")
-            return
-        host = urlparse(body).hostname or ""
-        if not self.config.get("allow_any_url", False) and not host.endswith("doubao.com"):
-            yield event.plain_result("默认只允许打开 doubao.com 的地址，要放开请在插件配置里开启 allow_any_url。")
+            yield event.plain_result("用法：/open https://example.com（需以 http 开头）")
             return
         try:
             url = await self.doubao.open_url(body)

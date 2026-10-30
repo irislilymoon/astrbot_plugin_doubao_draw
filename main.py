@@ -49,7 +49,7 @@ def _cmd(*names: str):
 
 @register(
     PLUGIN_NAME,
-    "16422",
+    "irislilymoon",
     "豆包生图：SSE 实时抓原图，支持比例、参考图、LLM 自动调用，只回图片",
     "0.1.0",
 )

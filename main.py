@@ -51,7 +51,7 @@ def _cmd(*names: str):
     PLUGIN_NAME,
     "irislilymoon",
     "豆包生图：SSE 实时抓原图，支持比例、参考图、LLM 自动调用，只回图片",
-    "0.1.2",
+    "0.1.1",
 )
 class DoubaoDrawPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):

@@ -123,6 +123,7 @@ const RECONNECT_DELAY = 3000;
 let rfb = null;
 let mode = 'fit';          // fit | zoom
 let zoomScale = 1;
+let fitBase = 0;           // noVNC 自己算出的满屏比例，百分比以它为准
 let retryTimer = 0;
 let toastTimer = 0;
 let hinted = false;
@@ -153,7 +154,7 @@ function fitScale() {
 }
 
 function currentScale() {
-  return mode === 'fit' ? fitScale() : zoomScale;
+  return mode === 'fit' ? (fitBase || fitScale()) : zoomScale;
 }
 
 /** 真正滚动的是 noVNC 自己那层容器，不是 #screen */
@@ -168,12 +169,16 @@ function setFit() {
     rfb.clipViewport = false;
     rfb.dragViewport = false;
     rfb.scaleViewport = true;
+    // scaleViewport 的 setter 会同步调用 _updateScale，这里拿到的就是 noVNC 的满屏比例。
+    // 用它做 100% 基准，避免自己按 clientWidth 估算而出现“铺满了却显示 110%”。
+    const base = rfb._display && rfb._display.scale;
+    if (base && rfb._display.width) fitBase = base;
   }
   screenEl.classList.remove('grab');
   resetBtn.classList.add('idle');
-  const s = scrollEl();
-  s.scrollLeft = 0;
-  s.scrollTop = 0;
+  const sc = scrollEl();
+  sc.scrollLeft = 0;
+  sc.scrollTop = 0;
 }
 
 /**
@@ -183,9 +188,9 @@ function setFit() {
 function setZoom(k, clientX, clientY) {
   const d = display();
   if (!d || !d.width) return;
-  const fit = fitScale();
+  const fit = fitBase || fitScale();
   k = Math.min(ZOOM_MAX, Math.max(fit, k));
-  if (k <= fit * 1.002) { setFit(); return; }
+  if (k <= fit * 1.002) { setFit(); toast('100%'); return; }
 
   const canvas = d._target;
   const s1 = currentScale();
@@ -414,6 +419,14 @@ function onResize() {
   if (!rfb) return;
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(() => {
+    // 窗口变了，满屏基准也跟着变；用 noVNC 自己的容器尺寸算，保持和它一致
+    try {
+      const d = rfb._display;
+      const size = rfb._screenSize ? rfb._screenSize() : null;
+      if (d && d._viewportLoc && size && size.w && size.h) {
+        fitBase = Math.min(size.w / d._viewportLoc.w, size.h / d._viewportLoc.h);
+      }
+    } catch (e) {}
     if (mode === 'zoom') {
       try { rfb._display.scale = zoomScale; } catch (e) {}
     } else {
@@ -428,6 +441,7 @@ window.__vnc = {
   get rfb() { return rfb; },
   get mode() { return mode; },
   get scale() { return rfb ? rfb._display.scale : 0; },
+  get fitBase() { return fitBase; },
 };
 
 connect();

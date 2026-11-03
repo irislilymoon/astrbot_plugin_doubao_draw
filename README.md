@@ -43,7 +43,7 @@
 > 3. **加 TLS**：对外访问套 HTTPS 反向代理，不要把 6080/6081 直接暴露在公网。
 >
 > `vnc_password_enabled` 可以关闭密码。**关闭等于把无认证的图形桌面交给整个网络**，
-> 只允许在完全隔离的可信内网这么做；关闭时 VNC 调试页会显示红色警告。
+> 只允许在完全隔离的可信内网这么做；关闭后 VNC 调试页顶部会以红字标出“未启用密码”。
 >
 > 设置页里密码以密码框显示（`secret`），这只是界面遮罩：
 > `data/config/astrbot_plugin_doubao_draw_config.json` 里的 `vnc_password` 仍是明文，

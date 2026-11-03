@@ -52,15 +52,9 @@
   button.primary { background: #4f7cff; border-color: #4f7cff; color: #fff; }
   button:disabled { opacity: .55; cursor: not-allowed; }
   .hint { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+  .hint.err { color: var(--err); font-weight: 600; }
+  .hint.warn { color: var(--warn); }
   .frame-wrap { flex: 1 1 auto; min-height: 0; background: var(--bg); position: relative; }
-  .notice {
-    display: none; flex: none; padding: 9px 14px; font-size: 13px; line-height: 1.6;
-    background: rgba(255, 107, 107, .14); border-bottom: 1px solid var(--line); color: var(--text);
-  }
-  .notice.show { display: block; }
-  .notice b { color: var(--err); }
-  .notice.warn { background: rgba(247, 185, 85, .14); }
-  .notice.warn b { color: var(--warn); }
   iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
   .placeholder {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -72,9 +66,6 @@
     display: block; max-width: min(900px, 90vw); color: var(--text);
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 6px 10px; word-break: break-all; user-select: all;
-  }
-  @media (max-width: 1100px) {
-    .hint { display: none; }
   }
   @media (max-width: 760px) {
     .bar { flex-wrap: wrap; row-gap: 8px; }
@@ -92,7 +83,6 @@
     <button id="btnReconnect">重新连接</button>
     <button id="btnCopy">复制直连地址</button>
   </div>
-  <div id="notice" class="notice"></div>
   <div class="frame-wrap">
     <iframe id="frame" title="VNC" allow="clipboard-read; clipboard-write" allowfullscreen></iframe>
     <div id="placeholder" class="placeholder">
@@ -111,7 +101,6 @@
   const btnRefresh = document.getElementById("btnRefresh");
   const btnReconnect = document.getElementById("btnReconnect");
   const btnCopy = document.getElementById("btnCopy");
-  const notice = document.getElementById("notice");
   const authHint = document.getElementById("authHint");
   let lastEmbedUrl = "";
   let directUrl = "";
@@ -202,19 +191,20 @@
     const enabled = !!st.auth_enabled;
     const isDefault = !!st.password_is_default;
     if (!enabled) {
-      authHint.textContent = "当前未启用密码";
-      notice.className = "notice show";
-      notice.innerHTML = "<b>当前 VNC 无密码。</b>任何能连到 5900 / 6080 端口的人都能直接操作这个浏览器，包括已登录的豆包账号、Cookie 和聊天记录。仅可在完全可信的内网使用，用完请到插件设置里重新开启 vnc_password_enabled。";
+      authHint.className = "hint err";
+      authHint.textContent = "未启用密码：5900 / 6080 对内网完全开放";
+      authHint.title = "任何能连到这两个端口的人都能直接操作这个浏览器，包括已登录的豆包账号、Cookie 和聊天记录。仅限完全可信的内网使用。";
       return;
     }
-    authHint.textContent = isDefault ? "已启用密码（默认 iris）" : "已启用密码";
     if (isDefault) {
-      notice.className = "notice show warn";
-      notice.innerHTML = "<b>正在使用默认密码 iris。</b>这是公开值，等于没有防护。请到插件设置里把 vnc_password 改成自己的密码，保存后重载插件，或点上面的「启动 / 修复 VNC」让新密码生效。";
-    } else {
-      notice.className = "notice";
-      notice.textContent = "";
+      authHint.className = "hint warn";
+      authHint.textContent = "正在使用默认密码 iris，请尽快修改";
+      authHint.title = "默认密码是公开值，等于没有防护。到插件设置里把 vnc_password 改成自己的密码。";
+      return;
     }
+    authHint.className = "hint";
+    authHint.textContent = "已启用密码";
+    authHint.title = "";
   }
 
   function render(st) {
@@ -252,7 +242,10 @@
     try {
       setStatus(ensure ? "正在启动 VNC…" : "检测中…");
       let st = unwrap(await call("vnc/status", "GET"));
-      if (ensure && (!st.ready || !st.embed_ready)) {
+      // 配置和实际进程不一致（刚改完密码/开关）时，页面打开就顺手校正，避免还停在旧认证方式
+      if (st.auth_mismatch) {
+        st = unwrap(await call("vnc/ensure", "POST"));
+      } else if (ensure && (!st.ready || !st.embed_ready)) {
         st = unwrap(await call("vnc/ensure", "POST"));
       }
       render(st);

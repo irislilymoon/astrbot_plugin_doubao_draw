@@ -282,6 +282,12 @@ class VncManager:
         else:
             embed_viewer = (self.web_root / self.embed_viewer).exists()
         ready = bool(xvfb and rfb and web and novnc)
+        # 配置意图与正在运行的 x11vnc 是否一致：不一致说明还在切换窗口期
+        procs = await self._x11vnc_procs()
+        auth_path = str(self.auth_file) if self.auth_enabled else None
+        auth_mismatch = any(
+            not self._matches_expected_auth(cmd, auth_path) for _, cmd in procs
+        )
         return {
             "ready": ready,
             "xvfb": bool(xvfb),
@@ -295,6 +301,7 @@ class VncManager:
             "embed_port": self.embed_port,
             "viewer_path": self.viewer_path,
             "embed_viewer": self.embed_viewer,
+            "auth_mismatch": bool(auth_mismatch),
             "url": self.client_url(),
             "public_url": self.public_url,
             "bind": self.bind or "0.0.0.0",

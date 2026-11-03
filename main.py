@@ -385,7 +385,8 @@ class DoubaoDrawPlugin(Star):
     async def _browser_watchdog(self):
         interval = max(15, int(self.config.get("watchdog_interval", 30)))
         logger.info(f"[doubao_draw] 浏览器兜底已启用，每 {interval} 秒检查一次")
-        await asyncio.sleep(interval)
+        # 首轮立即跑：插件重载后要马上把 x11vnc 的认证方式校准到当前配置，
+        # 否则关掉密码后还会有一段“仍要输密码”的窗口期。
         while True:
             try:
                 if self.config.get("vnc_auto_start", True):

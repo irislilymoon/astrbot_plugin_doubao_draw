@@ -4,3 +4,10 @@ desc: 用你自己的豆包账号在网页端生图：SSE 实时抓原图，/dra
 version: v0.1.4
 author: "irislilymoon"
 repo: "https://github.com/irislilymoon/astrbot_plugin_doubao_draw"
+tags:
+  - 生图
+  - 豆包
+  - AI绘画
+  - 文生图
+  - 图生图
+  - 网页自动化

@@ -5,99 +5,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VNC</title>
 <style>
-  :root {
-    --bg: #0b0e17;
-    --bar: rgba(22, 27, 43, .92);
-    --text: #e8eaf2;
-    --muted: #8b93ab;
-    --line: #2a3050;
-    --acc: #4f7cff;
+  :root { --bg: #0b0e17; }
+  @media (prefers-color-scheme: light) { :root { --bg: #eef1f8; } }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); }
+  body { font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif; }
+  #screen { position: absolute; inset: 0; background: var(--bg); }
+  /* noVNC 自己套了一层 flex 容器，底色是 #282828（看起来就是黑边），滚动的也是它 */
+  #screen > div {
+    background: transparent !important;
+    scrollbar-width: none; -ms-overflow-style: none;
   }
-  @media (prefers-color-scheme: light) {
-    :root { --bg: #eef1f8; --bar: rgba(255, 255, 255, .92); --text: #1b2030; --muted: #67708a; --line: #dfe4f2; }
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; height: 100%; overflow: hidden;
-    background: var(--bg); color: var(--text);
-  }
-  body {
-    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
-    display: flex; flex-direction: column;
-  }
-  #bar {
-    flex: none; height: 28px; display: flex; align-items: center; gap: 6px;
-    padding: 0 6px 0 8px; background: var(--bar);
-    border-bottom: 1px solid var(--line); overflow: hidden;
-  }
-  #dot { width: 7px; height: 7px; border-radius: 50%; background: #f7b955; flex: none; }
-  #dot.ok { background: #39d98a; }
-  #dot.err { background: #ff6b6b; }
-  #status {
-    color: var(--muted); white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; max-width: 42vw; flex: 0 1 auto;
-  }
-  .grow { flex: 1 1 auto; min-width: 4px; }
-  button {
-    appearance: none; height: 20px; padding: 0 7px; border-radius: 5px;
-    border: 1px solid var(--line); background: transparent; color: var(--text);
-    font: inherit; line-height: 18px; cursor: pointer; white-space: nowrap; flex: none;
-  }
-  button:hover { border-color: var(--muted); }
-  button.on { background: var(--acc); border-color: var(--acc); color: #fff; }
-  #zoomLabel { color: var(--muted); min-width: 34px; text-align: center; flex: none; }
-  #screen {
-    flex: 1 1 auto; min-height: 0; position: relative;
-    background: var(--bg); overflow: hidden;
-  }
-  /* 适配模式：画布居中，留白与面板同色，看不到黑边 */
-  #screen.fit { display: flex; align-items: center; justify-content: center; }
-  #screen.grab { cursor: grab; }
-  #screen.grab:active { cursor: grabbing; }
+  #screen > div::-webkit-scrollbar { width: 0; height: 0; }
+  #screen.grab, #screen.grab > div, #screen.grab canvas { cursor: grab; }
+  #screen.grab:active, #screen.grab > div:active, #screen.grab canvas:active { cursor: grabbing; }
+  /* 放大时别再让 noVNC 用 margin:auto 居中，否则溢出部分会滑到左边滚不到 */
+  #screen.grab canvas { margin: 0 auto !important; }
   #msg {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-    flex-direction: column; gap: 8px; padding: 20px; text-align: center; color: var(--muted);
-    pointer-events: none;
+    padding: 20px; text-align: center; color: #8b93ab; pointer-events: none;
   }
   #msg.hidden { display: none; }
-  @media (max-width: 520px) {
-    #status { max-width: 30vw; }
-    .wide { display: none; }
+  #toast {
+    position: absolute; left: 50%; top: 14px; transform: translateX(-50%);
+    padding: 5px 12px; border-radius: 999px; white-space: nowrap;
+    background: rgba(16, 20, 32, .78); color: #e8eaf2; font-size: 12px;
+    opacity: 0; transition: opacity .18s ease; pointer-events: none;
   }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
-  <div id="bar">
-    <i id="dot"></i>
-    <span id="status">连接中…</span>
-    <span class="grow"></span>
-    <button id="btnFit" class="on">适应窗口</button>
-    <button id="btnOut">−</button>
-    <span id="zoomLabel">—</span>
-    <button id="btnIn">+</button>
-    <button id="btnOne" title="1:1 原始像素">1:1</button>
-    <button id="btnCd" class="wide" title="发送 Ctrl+Alt+Del">CAD</button>
-    <button id="btnFs" title="全屏">全屏</button>
-    <button id="btnReconnect" title="断开并重连">重连</button>
-  </div>
-  <div id="screen" class="fit"></div>
+  <div id="screen"></div>
   <div id="msg">正在连接 VNC…</div>
+  <div id="toast"></div>
 
 <script type="module">
 import RFB from './core/rfb.js';
 
 const screenEl = document.getElementById('screen');
 const msgEl = document.getElementById('msg');
-const dot = document.getElementById('dot');
-const statusEl = document.getElementById('status');
-const zoomLabel = document.getElementById('zoomLabel');
-const btnFit = document.getElementById('btnFit');
-const btnOne = document.getElementById('btnOne');
-const btnIn = document.getElementById('btnIn');
-const btnOut = document.getElementById('btnOut');
-const btnCd = document.getElementById('btnCd');
-const btnFs = document.getElementById('btnFs');
-const btnReconnect = document.getElementById('btnReconnect');
+const toastEl = document.getElementById('toast');
 
 const params = new URLSearchParams(location.search);
 const host = params.get('host') || location.hostname;
@@ -106,14 +53,22 @@ const path = params.get('path') || 'websockify';
 const password = params.get('password') || '';
 const viewOnly = params.get('view_only') === '1';
 
-let rfb = null;
-let mode = 'fit';          // fit | manual
-let manualScale = 1;
-let connected = false;
+const ZOOM_STEP = 1.1;
+const ZOOM_MAX = 3;
+const RECONNECT_DELAY = 3000;
 
-function setStatus(text, kind) {
-  statusEl.textContent = text;
-  dot.className = kind || '';
+let rfb = null;
+let mode = 'fit';          // fit | zoom
+let zoomScale = 1;
+let retryTimer = 0;
+let toastTimer = 0;
+let hinted = false;
+
+function toast(text, ms) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  if (ms !== 0) toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms || 900);
 }
 
 function wsUrl() {
@@ -121,56 +76,118 @@ function wsUrl() {
   return `${proto}://${host}:${port}/${path.replace(/^\/+/, '')}`;
 }
 
+function display() {
+  return rfb && rfb._display;
+}
+
 function fitScale() {
-  if (!rfb || !rfb._fbWidth) return 1;
+  const d = display();
+  if (!d || !d.width || !d.height) return 1;
   const w = screenEl.clientWidth;
   const h = screenEl.clientHeight;
   if (!w || !h) return 1;
-  return Math.min(w / rfb._fbWidth, h / rfb._fbHeight);
+  return Math.min(w / d.width, h / d.height);
 }
 
-function paintZoom() {
-  const s = mode === 'fit' ? fitScale() : manualScale;
-  zoomLabel.textContent = Math.round(s * 100) + '%';
-  btnFit.classList.toggle('on', mode === 'fit');
-  btnOne.classList.toggle('on', mode === 'manual' && Math.abs(manualScale - 1) < 0.001);
-  screenEl.classList.toggle('fit', mode === 'fit');
-  screenEl.classList.toggle('grab', mode === 'manual' && manualScale > fitScale() + 0.001);
+function currentScale() {
+  return mode === 'fit' ? fitScale() : zoomScale;
 }
 
-function applyFit() {
+/** 真正滚动的是 noVNC 自己那层容器，不是 #screen */
+function scrollEl() {
+  return (rfb && rfb._screen) || screenEl;
+}
+
+/** 适应窗口：整块远程桌面完整可见（默认就是这个） */
+function setFit() {
   mode = 'fit';
   if (rfb) {
     rfb.clipViewport = false;
     rfb.dragViewport = false;
     rfb.scaleViewport = true;
   }
-  paintZoom();
+  screenEl.classList.remove('grab');
+  const s = scrollEl();
+  s.scrollLeft = 0;
+  s.scrollTop = 0;
 }
 
-function applyManual(scale) {
+/**
+ * 缩放到 k，锚点是屏幕坐标 (clientX, clientY)。
+ * k 不会低于“适应窗口”；双击或 Esc 回到适应窗口。
+ */
+function setZoom(k, clientX, clientY) {
+  const d = display();
+  if (!d || !d.width) return;
+  const fit = fitScale();
+  k = Math.min(ZOOM_MAX, Math.max(fit, k));
+  if (k <= fit * 1.002) { setFit(); return; }
+
+  const canvas = d._target;
+  const s1 = currentScale();
+  const rect1 = canvas.getBoundingClientRect();
+  const ax = clientX == null ? screenEl.clientWidth / 2 : clientX;
+  const ay = clientY == null ? screenEl.clientHeight / 2 : clientY;
+  // 光标下的远程像素
+  const remoteX = (ax - rect1.left) / s1;
+  const remoteY = (ay - rect1.top) / s1;
+
+  mode = 'zoom';
+  zoomScale = k;
+  rfb.scaleViewport = false;   // 关掉自适应后 noVNC 会把 display.scale 复位成 1
+  rfb.clipViewport = false;
+  try { d.scale = k; } catch (e) { /* 版本差异 */ }
+  screenEl.classList.add('grab');
+
+  // 让同一个远程像素停在光标下
+  const s = scrollEl();
+  const rect2 = canvas.getBoundingClientRect();
+  if (s.scrollWidth > s.clientWidth) s.scrollLeft += (rect2.left + remoteX * k) - ax;
+  if (s.scrollHeight > s.clientHeight) s.scrollTop += (rect2.top + remoteY * k) - ay;
+  toast(Math.round(k * 100) + '%');
+}
+
+function onWheel(e) {
   if (!rfb) return;
-  mode = 'manual';
-  manualScale = Math.min(4, Math.max(0.1, scale));
-  // 关闭自动缩放后 noVNC 会把 display.scale 复位成 1，因此顺序不能反
-  rfb.scaleViewport = false;
-  rfb.clipViewport = true;
-  rfb.dragViewport = true;
-  try { rfb._display.scale = manualScale; } catch (e) { /* 版本差异，忽略 */ }
-  paintZoom();
+  const zoomed = mode === 'zoom';
+  if (e.ctrlKey || e.metaKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+    setZoom(currentScale() * factor, e.clientX, e.clientY);
+    return;
+  }
+  if (!zoomed) return;          // 适应窗口时滚轮交给远程页面
+  e.preventDefault();           // 放大状态：滚轮平移视野
+  e.stopPropagation();
+  const s = scrollEl();
+  s.scrollLeft += e.deltaX || (e.shiftKey ? e.deltaY : 0);
+  s.scrollTop += e.shiftKey ? 0 : e.deltaY;
 }
 
-function step(delta) {
-  const base = mode === 'fit' ? fitScale() : manualScale;
-  applyManual(Math.round((base + delta) * 100) / 100);
+// 放大后中键拖拽平移
+let pan = null;
+function onMouseDown(e) {
+  if (mode !== 'zoom' || e.button !== 1) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const s = scrollEl();
+  pan = { x: e.clientX, y: e.clientY, l: s.scrollLeft, t: s.scrollTop };
 }
+function onMouseMove(e) {
+  if (!pan) return;
+  e.preventDefault();
+  const s = scrollEl();
+  s.scrollLeft = pan.l - (e.clientX - pan.x);
+  s.scrollTop = pan.t - (e.clientY - pan.y);
+}
+function onMouseUp() { pan = null; }
 
 function connect() {
-  connected = false;
+  clearTimeout(retryTimer);
   screenEl.innerHTML = '';
-  msgEl.classList.remove('hidden');
-  msgEl.textContent = '正在连接 VNC…';
-  setStatus('连接中…');
+  mode = 'fit';
+  msgEl.classList.add('hidden');
   if (rfb) {
     try { rfb.disconnect(); } catch (e) {}
     rfb = null;
@@ -178,57 +195,73 @@ function connect() {
   try {
     rfb = new RFB(screenEl, wsUrl(), { credentials: { password }, wsProtocols: ['binary'] });
   } catch (e) {
-    setStatus('初始化失败', 'err');
+    msgEl.classList.remove('hidden');
     msgEl.textContent = '初始化失败：' + (e && e.message ? e.message : e);
     return;
   }
 
   rfb.addEventListener('connect', () => {
-    connected = true;
     msgEl.classList.add('hidden');
-    setStatus(`已连接 ${rfb._fbWidth}×${rfb._fbHeight}`, 'ok');
-    if (mode === 'fit') applyFit(); else applyManual(manualScale);
-    paintZoom();
+    setFit();
+    if (!hinted) {
+      hinted = true;
+      toast('Ctrl+滚轮缩放，双击回到适应窗口', 2800);
+    }
   });
   rfb.addEventListener('disconnect', (e) => {
-    connected = false;
+    const clean = e.detail && e.detail.clean;
     msgEl.classList.remove('hidden');
-    msgEl.textContent = (e.detail && e.detail.clean) ? '连接已断开，点“重连”恢复。' : '连接中断，点“重连”重试。';
-    setStatus('已断开', 'err');
+    msgEl.textContent = clean ? '连接已断开，正在重连…' : '连接中断，正在重连…';
+    toastEl.classList.remove('show');
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, RECONNECT_DELAY);
   });
   rfb.addEventListener('credentialsrequired', () => {
     const pwd = prompt('VNC 密码：') || '';
     rfb.sendCredentials({ password: pwd });
   });
   rfb.viewOnly = viewOnly;
-  applyFit();
+  setFit();
 }
 
-btnFit.addEventListener('click', applyFit);
-btnOne.addEventListener('click', () => applyManual(1));
-btnIn.addEventListener('click', () => step(0.1));
-btnOut.addEventListener('click', () => step(-0.1));
-btnCd.addEventListener('click', () => { if (rfb) rfb.sendCtrlAltDel(); });
-btnFs.addEventListener('click', () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(() => {});
-});
-btnReconnect.addEventListener('click', connect);
+// Ctrl+滚轮缩放（捕获阶段拦下，别让浏览器把整个面板页面放大）
+screenEl.addEventListener('wheel', onWheel, { passive: false, capture: true });
+screenEl.addEventListener('mousedown', onMouseDown, true);
+window.addEventListener('mousemove', onMouseMove, true);
+window.addEventListener('mouseup', onMouseUp, true);
 
-// 容器尺寸变化：适配模式交给 noVNC 自己重算，手动缩放要重新套用
+// 双击 / Esc 回到适应窗口
+screenEl.addEventListener('dblclick', (e) => {
+  if (mode !== 'zoom') return;
+  e.preventDefault();
+  e.stopPropagation();
+  setFit();
+}, true);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mode === 'zoom') setFit();
+});
+
+// 容器尺寸变化：放大状态重新套用缩放，适应状态重新算
 let rafId = 0;
 function onResize() {
   if (!rfb) return;
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(() => {
-    if (mode === 'manual') {
-      try { rfb._display.scale = manualScale; } catch (e) {}
+    if (mode === 'zoom') {
+      try { rfb._display.scale = zoomScale; } catch (e) {}
+    } else {
+      setFit();
     }
-    paintZoom();
   });
 }
 window.addEventListener('resize', onResize);
 try { new ResizeObserver(onResize).observe(screenEl); } catch (e) {}
+
+window.__vnc = {
+  get rfb() { return rfb; },
+  get mode() { return mode; },
+  get scale() { return rfb ? rfb._display.scale : 0; },
+};
 
 connect();
 </script>

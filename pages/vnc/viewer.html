@@ -144,7 +144,7 @@ function setZoom(k, clientX, clientY) {
   const rect2 = canvas.getBoundingClientRect();
   if (s.scrollWidth > s.clientWidth) s.scrollLeft += (rect2.left + remoteX * k) - ax;
   if (s.scrollHeight > s.clientHeight) s.scrollTop += (rect2.top + remoteY * k) - ay;
-  toast(Math.round(k * 100) + '%');
+  toast(Math.round((k / fit) * 100) + '%');
 }
 
 function onWheel(e) {
@@ -165,23 +165,83 @@ function onWheel(e) {
   s.scrollTop += e.shiftKey ? 0 : e.deltaY;
 }
 
-// 放大后中键拖拽平移
+// ---------- 放大状态下平移 ----------
+// 左键拖 = 平移（往右拖就看左边）；按下没动过就算点击，原样补发给远端
+// 中键拖 = 平移
+let gesture = null;
 let pan = null;
+let replaying = false;
+
+function canvasEl() {
+  return (rfb && rfb._display && rfb._display._target) || null;
+}
+
 function onMouseDown(e) {
-  if (mode !== 'zoom' || e.button !== 1) return;
-  e.preventDefault();
-  e.stopPropagation();
-  const s = scrollEl();
-  pan = { x: e.clientX, y: e.clientY, l: s.scrollLeft, t: s.scrollTop };
+  if (!rfb || replaying) return;
+  if (mode !== 'zoom') return;              // 满屏状态：完全交给 noVNC
+  if (e.button === 1) {                     // 中键
+    e.preventDefault();
+    e.stopPropagation();
+    const s = scrollEl();
+    pan = { x: e.clientX, y: e.clientY, l: s.scrollLeft, t: s.scrollTop };
+    return;
+  }
+  if (e.button !== 0) return;
+  e.stopPropagation();                      // 先别让远端收到，判定完再补发
+  gesture = { x: e.clientX, y: e.clientY, moved: false };
 }
+
 function onMouseMove(e) {
-  if (!pan) return;
-  e.preventDefault();
-  const s = scrollEl();
-  s.scrollLeft = pan.l - (e.clientX - pan.x);
-  s.scrollTop = pan.t - (e.clientY - pan.y);
+  if (replaying) return;
+  if (pan) {
+    e.preventDefault();
+    e.stopPropagation();
+    const s = scrollEl();
+    s.scrollLeft = pan.l - (e.clientX - pan.x);
+    s.scrollTop = pan.t - (e.clientY - pan.y);
+    return;
+  }
+  if (!gesture) return;
+  const dx = e.clientX - gesture.x;
+  const dy = e.clientY - gesture.y;
+  if (!gesture.moved && Math.abs(dx) + Math.abs(dy) > 3) gesture.moved = true;
+  if (gesture.moved) {
+    e.preventDefault();
+    e.stopPropagation();
+    const s = scrollEl();
+    s.scrollLeft -= dx;                     // 往右拖 -> 看到左边
+    s.scrollTop -= dy;
+    gesture.x = e.clientX;
+    gesture.y = e.clientY;
+  }
 }
-function onMouseUp() { pan = null; }
+
+function onMouseUp(e) {
+  if (replaying) return;
+  if (pan) {
+    pan = null;
+    e.stopPropagation();
+    return;
+  }
+  if (!gesture) return;
+  const g = gesture;
+  gesture = null;
+  if (g.moved || e.button !== 0) {
+    e.stopPropagation();
+    return;
+  }
+  const c = canvasEl();
+  if (!c) return;
+  replaying = true;                         // 纯点击：补发给远端
+  try {
+    const base = { clientX: e.clientX, clientY: e.clientY, button: 0, bubbles: true, cancelable: true };
+    c.dispatchEvent(new MouseEvent('mousemove', { ...base, buttons: 0 }));
+    c.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1 }));
+    c.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0 }));
+  } finally {
+    replaying = false;
+  }
+}
 
 function connect() {
   clearTimeout(retryTimer);
@@ -205,7 +265,7 @@ function connect() {
     setFit();
     if (!hinted) {
       hinted = true;
-      toast('Ctrl+滚轮缩放，双击回到适应窗口', 2800);
+      toast('Ctrl+滚轮缩放，放大后可拖动平移，双击回到满屏', 2800);
     }
   });
   rfb.addEventListener('disconnect', (e) => {
@@ -236,9 +296,10 @@ screenEl.addEventListener('dblclick', (e) => {
   e.preventDefault();
   e.stopPropagation();
   setFit();
+  toast('100%');
 }, true);
 window.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && mode === 'zoom') setFit();
+  if (e.key === 'Escape' && mode === 'zoom') { setFit(); toast('100%'); }
 });
 
 // 容器尺寸变化：放大状态重新套用缩放，适应状态重新算

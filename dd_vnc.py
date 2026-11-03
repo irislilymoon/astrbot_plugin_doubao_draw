@@ -374,26 +374,30 @@ class VncManager:
                         errors.append("x11vnc 启动失败")
 
             if not await self._port_open(self.web_port):
-                if not shutil.which("websockify"):
-                    errors.append("缺少 websockify")
-                elif not self.web_root.exists():
-                    errors.append("缺少 noVNC 静态文件")
-                else:
-                    listen = (
-                        f"{self.bind}:{self.web_port}"
-                        if self.bind
-                        else str(self.web_port)
-                    )
-                    await self._spawn(
-                        "websockify",
-                        "--web=" + str(self.web_root),
-                        listen,
-                        f"localhost:{self.rfb_port}",
-                        log_name="websockify",
-                    )
-                    await self._wait(lambda: self._port_open(self.web_port), 8)
-                    if not await self._port_open(self.web_port):
-                        errors.append("websockify 启动失败")
+                if await self._proc_running("websockify"):
+                    # 已有进程在跑但端口还没起来，别急着重开一个
+                    await self._wait(lambda: self._port_open(self.web_port), 3)
+                if not await self._port_open(self.web_port):
+                    if not shutil.which("websockify"):
+                        errors.append("缺少 websockify")
+                    elif not self.web_root.exists():
+                        errors.append("缺少 noVNC 静态文件")
+                    else:
+                        listen = (
+                            f"{self.bind}:{self.web_port}"
+                            if self.bind
+                            else str(self.web_port)
+                        )
+                        await self._spawn(
+                            "websockify",
+                            "--web=" + str(self.web_root),
+                            listen,
+                            f"localhost:{self.rfb_port}",
+                            log_name="websockify",
+                        )
+                        await self._wait(lambda: self._port_open(self.web_port), 8)
+                        if not await self._port_open(self.web_port):
+                            errors.append("websockify 启动失败")
 
             if not await self._port_open(self.embed_port):
                 script = Path(__file__).with_name("dd_vnc_web.py")

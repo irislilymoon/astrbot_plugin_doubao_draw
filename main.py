@@ -22,6 +22,10 @@ import astrbot.api.message_components as Comp
 
 PLUGIN_NAME = "astrbot_plugin_doubao_draw"
 
+# 模块级单例：AstrBot 重载插件时旧实例的 terminate 不一定来得及跑，
+# 这里用全局变量保证同一时刻只有一个 VNC 校准任务，避免新旧实例互相杀 x11vnc。
+_VNC_TASK: asyncio.Task | None = None
+
 _BASE = Path(__file__).parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
@@ -386,13 +390,17 @@ class DoubaoDrawPlugin(Star):
 
     def _start_vnc_watchdog(self):
         """VNC 校准独立于浏览器兜底：插件一重载就立刻把认证方式对齐当前配置。"""
+        global _VNC_TASK
         if not self.config.get("vnc_auto_start", True):
             return
-        if self._vnc_task and not self._vnc_task.done():
-            return
+        # 旧实例的任务先取消，保证全局只有一个
+        if _VNC_TASK and not _VNC_TASK.done():
+            _VNC_TASK.cancel()
         try:
-            self._vnc_task = asyncio.create_task(self._vnc_watchdog())
+            _VNC_TASK = asyncio.create_task(self._vnc_watchdog())
+            self._vnc_task = _VNC_TASK
         except RuntimeError:
+            _VNC_TASK = None
             self._vnc_task = None
 
     async def _vnc_watchdog(self):
@@ -804,20 +812,12 @@ class DoubaoDrawPlugin(Star):
         return role in ("admin", "owner")
 
     async def terminate(self):
-        task = self._watchdog_task
-        if task:
+        for task in (self._vnc_task, self._watchdog_task, self._llm_switch_task):
+            if not task:
+                continue
             task.cancel()
             try:
                 await task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-        llm_task = self._llm_switch_task
-        if llm_task:
-            llm_task.cancel()
-            try:
-                await llm_task
             except asyncio.CancelledError:
                 pass
             except Exception:

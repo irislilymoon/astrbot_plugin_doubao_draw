@@ -1,16 +1,24 @@
 # -*- coding: utf-8 -*-
-"""VNC 兜底：复用容器里已有的 Xvfb/x11vnc/noVNC，缺哪个补哪个。"""
+"""VNC 兜底：复用容器里已有的 Xvfb/x11vnc/noVNC，缺哪个补哪个。
+
+安全默认：x11vnc 默认带密码启动（-rfbauth），密码来自插件配置（默认 iris）。
+只有显式关闭 vnc_password_enabled 才会退回 -nopw。
+"""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import shutil
+import signal
 import sys
 from pathlib import Path
 
 
 class VncManager:
+    DEFAULT_PASSWORD = "iris"
+
     def __init__(
         self,
         logger=None,
@@ -21,6 +29,10 @@ class VncManager:
         embed_port: int = 6081,
         public_url: str = "",
         log_dir: str | None = None,
+        state_dir: str | None = None,
+        password: str = "iris",
+        auth_enabled: bool = True,
+        bind: str = "0.0.0.0",
     ):
         self.log = logger
         self.display = display or ":99"
@@ -29,12 +41,23 @@ class VncManager:
         self.web_port = int(web_port)
         self.embed_port = int(embed_port)
         self.public_url = (public_url or "").strip()
+        self.bind = (bind or "").strip()
+        self.password = (password or "").strip()
+        # 密码为空时视为未启用，避免出现“要求密码但密码是空串”的尴尬状态
+        self.auth_enabled = bool(auth_enabled) and bool(self.password)
         self.web_root = Path("/usr/share/novnc")
         self.log_dir = Path(log_dir) if log_dir else Path("/tmp")
         try:
             self.log_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
             self.log_dir = Path("/tmp")
+        self.state_dir = Path(state_dir) if state_dir else self.log_dir
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            self.state_dir = self.log_dir
+        self.auth_file = self.state_dir / "vnc_passwd"
+        self.auth_stamp = self.state_dir / "vnc_passwd.sha256"
         self._lock = asyncio.Lock()
 
     @property
@@ -92,6 +115,162 @@ class VncManager:
             return "vnc_lite.html"
         return self.viewer_path
 
+    # ---------------- 密码 ----------------
+
+    def _password_digest(self) -> str:
+        return hashlib.sha256(self.password.encode("utf-8")).hexdigest()
+
+    async def _ensure_auth_file(self) -> tuple[str | None, str | None]:
+        """生成/复用 x11vnc 密码文件。返回 (路径, 错误)。密码内容不落日志。"""
+        if not self.auth_enabled:
+            return None, None
+        digest = self._password_digest()
+        try:
+            stamp = self.auth_stamp.read_text(encoding="utf-8").strip()
+        except Exception:
+            stamp = ""
+        try:
+            fresh = (
+                self.auth_file.exists()
+                and self.auth_file.stat().st_size > 0
+                and stamp == digest
+            )
+        except Exception:
+            fresh = False
+        if fresh:
+            return str(self.auth_file), None
+        if not shutil.which("x11vnc"):
+            return None, "缺少 x11vnc，无法生成 VNC 密码文件"
+        code = await self._run(
+            "x11vnc", "-storepasswd", self.password, str(self.auth_file)
+        )
+        try:
+            ok = self.auth_file.exists() and self.auth_file.stat().st_size > 0
+        except Exception:
+            ok = False
+        if code != 0 or not ok:
+            return None, "x11vnc 生成密码文件失败"
+        try:
+            os.chmod(self.auth_file, 0o600)
+            self.auth_stamp.write_text(digest, encoding="utf-8")
+        except Exception:
+            pass
+        return str(self.auth_file), None
+
+    async def _run(self, *args: str) -> int:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            return await asyncio.wait_for(proc.wait(), timeout=15)
+        except Exception:
+            return 1
+
+    # ---------------- 已运行实例的认证校准 ----------------
+
+    async def _x11vnc_procs(self) -> list[tuple[int, str]]:
+        """列出占用本插件 RFB 端口的 x11vnc 进程。"""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pgrep",
+                "-af",
+                "x11vnc",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            return []
+        procs: list[tuple[int, str]] = []
+        for line in out.decode("utf-8", "ignore").splitlines():
+            line = line.strip()
+            if not line or "dd_vnc_web.py" in line:
+                continue
+            pid_s, _, cmd = line.partition(" ")
+            if not pid_s.isdigit() or "x11vnc" not in cmd:
+                continue
+            if (
+                f"-rfbport {self.rfb_port}" in cmd
+                or f"-rfbport={self.rfb_port}" in cmd
+            ):
+                procs.append((int(pid_s), cmd))
+        return procs
+
+    def _matches_expected_auth(self, cmd: str, auth_path: str | None) -> bool:
+        if self.auth_enabled:
+            return bool(auth_path) and auth_path in cmd
+        return "-nopw" in cmd
+
+    def _matches_expected_bind(self, cmd: str) -> bool:
+        if not self.bind or self.bind in ("0.0.0.0", "*"):
+            return "-listen " not in cmd
+        return f"-listen {self.bind}" in cmd
+
+    def _pid_start_epoch(self, pid: int) -> float:
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as f:
+                data = f.read().decode("utf-8", "ignore")
+            fields = data[data.rfind(")") + 2 :].split()
+            starttime = int(fields[19])  # /proc/<pid>/stat 第 22 字段
+            btime = 0
+            with open("/proc/stat", "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("btime "):
+                        btime = int(line.split()[1])
+                        break
+            if not btime:
+                return 0.0
+            return btime + starttime / os.sysconf("SC_CLK_TCK")
+        except Exception:
+            return 0.0
+
+    async def _reconcile_x11vnc(self, auth_path: str | None) -> bool:
+        """让已在跑的 x11vnc 与本插件当前的认证配置一致；不一致就重启它。"""
+        procs = await self._x11vnc_procs()
+        if not procs:
+            return False
+        stale: list[tuple[int, str]] = []
+        for pid, cmd in procs:
+            if not self._matches_expected_auth(cmd, auth_path):
+                stale.append((pid, "认证方式与当前配置不一致"))
+                continue
+            if not self._matches_expected_bind(cmd):
+                stale.append((pid, "监听地址与当前配置不一致"))
+                continue
+            if self.auth_enabled:
+                try:
+                    started = self._pid_start_epoch(pid)
+                    changed = self.auth_file.stat().st_mtime
+                    if started and changed > started + 1:
+                        stale.append((pid, "密码已更新"))
+                except Exception:
+                    pass
+        if not stale:
+            return False
+        for pid, why in stale:
+            if self.log:
+                self.log.info(f"[doubao_draw] 重启 x11vnc（{why}），pid={pid}")
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+        if await self._wait(self._port_closed, 3):
+            return True
+        for pid, _ in stale:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        await self._wait(self._port_closed, 4)
+        return True
+
+    async def _port_closed(self) -> bool:
+        return not await self._port_open(self.rfb_port)
+
+    # ---------------- 状态 ----------------
+
     async def status(self) -> dict:
         xvfb = self._xvfb_running() or await self._proc_running(f"Xvfb {self.display}")
         rfb = await self._port_open(self.rfb_port)
@@ -118,12 +297,21 @@ class VncManager:
             "embed_viewer": self.embed_viewer,
             "url": self.client_url(),
             "public_url": self.public_url,
+            "bind": self.bind or "0.0.0.0",
+            "auth_enabled": self.auth_enabled,
+            "password_is_default": bool(
+                self.auth_enabled and self.password == self.DEFAULT_PASSWORD
+            ),
         }
 
     async def ensure(self) -> dict:
-        """启动缺失的服务；已有服务直接复用，不杀进程。"""
+        """启动缺失的服务；已有服务直接复用，认证方式不符时重启校准。"""
         async with self._lock:
             errors: list[str] = []
+            auth_path, auth_err = await self._ensure_auth_file()
+            if auth_err:
+                errors.append(auth_err)
+
             if not self._xvfb_running():
                 if not shutil.which("Xvfb"):
                     errors.append("缺少 Xvfb")
@@ -143,19 +331,33 @@ class VncManager:
                     if not self._xvfb_running():
                         errors.append("Xvfb 启动失败")
 
+            if await self._port_open(self.rfb_port):
+                await self._reconcile_x11vnc(auth_path)
+
             if not await self._port_open(self.rfb_port):
                 if not shutil.which("x11vnc"):
                     errors.append("缺少 x11vnc")
+                elif self.auth_enabled and not auth_path:
+                    # 安全兜底：要求密码但密码文件没生成时，绝不退回无密码启动
+                    errors.append("VNC 密码未生成，已拒绝以无密码方式启动 x11vnc")
                 else:
-                    await self._spawn(
+                    args = [
                         "x11vnc",
                         "-display",
                         self.display,
                         "-forever",
                         "-shared",
-                        "-nopw",
                         "-rfbport",
                         str(self.rfb_port),
+                    ]
+                    if self.bind and self.bind not in ("0.0.0.0", "*"):
+                        args += ["-listen", self.bind]
+                    if auth_path:
+                        args += ["-rfbauth", auth_path]
+                    else:
+                        args += ["-nopw"]
+                    await self._spawn(
+                        *args,
                         log_name="x11vnc",
                         env_extra={"DISPLAY": self.display},
                     )
@@ -169,10 +371,15 @@ class VncManager:
                 elif not self.web_root.exists():
                     errors.append("缺少 noVNC 静态文件")
                 else:
+                    listen = (
+                        f"{self.bind}:{self.web_port}"
+                        if self.bind
+                        else str(self.web_port)
+                    )
                     await self._spawn(
                         "websockify",
                         "--web=" + str(self.web_root),
-                        str(self.web_port),
+                        listen,
                         f"localhost:{self.rfb_port}",
                         log_name="websockify",
                     )
@@ -191,6 +398,7 @@ class VncManager:
                         str(self.embed_port),
                         str(self.web_root),
                         str(self.viewer_file),
+                        self.bind or "0.0.0.0",
                         log_name="vncweb",
                     )
                     await self._wait(lambda: self._port_open(self.embed_port), 8)
@@ -202,7 +410,10 @@ class VncManager:
                 data["error"] = "；".join(errors)
             if self.log:
                 if data["ready"] and data["embed_ready"]:
-                    self.log.info(f"[doubao_draw] VNC 已就绪：{data['url']}")
+                    mode = "密码保护" if self.auth_enabled else "无密码"
+                    self.log.info(
+                        f"[doubao_draw] VNC 已就绪（{mode}）：{data['url']}"
+                    )
                 elif data.get("error"):
                     self.log.warning(f"[doubao_draw] VNC 未就绪：{data['error']}")
             return data

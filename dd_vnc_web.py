@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """给 AstrBot 沙箱插件页用的 noVNC 静态服务：附加 CORS 头，复用现有 websockify。
 
-用法：python dd_vnc_web.py <port> <novnc_root> [viewer_html]
-/viewer.html 与 / 会被替换成插件自带的查看器，其余路径仍然是 noVNC 静态文件。
+用法：python dd_vnc_web.py <port> <novnc_root> [viewer_html] [host]
+/ 与 /viewer.html 会被替换成插件自带的查看器，其余路径仍是 noVNC 静态文件。
+这里只提供静态页面，不含 RFB 通道；VNC 认证由 x11vnc 负责。
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 VIEWER = ""
+HOST = "0.0.0.0"
+ROOT = "/usr/share/novnc"
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -44,5 +47,7 @@ if __name__ == "__main__":
     ROOT = sys.argv[2] if len(sys.argv) > 2 else "/usr/share/novnc"
     if len(sys.argv) > 3 and os.path.isfile(sys.argv[3]):
         VIEWER = sys.argv[3]
+    if len(sys.argv) > 4 and sys.argv[4].strip():
+        HOST = sys.argv[4].strip()
     os.chdir(ROOT)
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    ThreadingHTTPServer((HOST, port), Handler).serve_forever()

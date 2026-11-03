@@ -51,7 +51,7 @@ def _cmd(*names: str):
     PLUGIN_NAME,
     "irislilymoon",
     "豆包生图：SSE 实时抓原图，支持比例、参考图、LLM 自动调用，只回图片",
-    "0.1.2",
+    "0.1.3",
 )
 class DoubaoDrawPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -87,6 +87,10 @@ class DoubaoDrawPlugin(Star):
             embed_port=int(config.get("vnc_embed_port", 6081)),
             public_url=str(config.get("vnc_public_url") or ""),
             log_dir=str(data_dir / "vnc_logs"),
+            state_dir=str(data_dir),
+            password=str(config.get("vnc_password") or dd_vnc.VncManager.DEFAULT_PASSWORD),
+            auth_enabled=bool(config.get("vnc_password_enabled", True)),
+            bind=str(config.get("vnc_bind") or "0.0.0.0"),
         )
         self._register_vnc_api()
         self._last_at: dict[str, float] = {}

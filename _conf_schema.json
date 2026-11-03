@@ -97,6 +97,24 @@
     "default": true,
     "hint": "已有 Xvfb/x11vnc/noVNC 就复用，缺失时自动拉起"
   },
+  "vnc_password_enabled": {
+    "description": "VNC 连接需要密码",
+    "type": "bool",
+    "default": true,
+    "hint": "默认开启，强烈建议保持。关闭后 5900/6080 端口变成无认证的图形桌面：任何能连到这两个端口的人都能直接操作浏览器，包括已登录的豆包账号、Cookie 和聊天记录。只允许在完全可信的内网关闭。"
+  },
+  "vnc_password": {
+    "description": "VNC 连接密码",
+    "type": "string",
+    "default": "iris",
+    "hint": "默认 iris，装好后请改成自己的。VNC 协议只使用前 8 个字符，超过部分无效。改完保存并重载插件，或点 VNC 调试页的「启动 / 修复 VNC」让新密码生效。"
+  },
+  "vnc_bind": {
+    "description": "VNC 监听地址",
+    "type": "string",
+    "default": "0.0.0.0",
+    "hint": "0.0.0.0 表示所有网卡，远程打开面板才能用内嵌 VNC；只在本机使用时改成 127.0.0.1 可显著缩小暴露面。"
+  },
   "vnc_public_url": {
     "description": "VNC 直连地址（可选）",
     "type": "string",

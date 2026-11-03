@@ -31,7 +31,9 @@
 
 - 已有 Xvfb / x11vnc / noVNC 直接复用
 - 缺哪个自动拉起哪个；浏览器窗口也会由兜底任务恢复
-- 页面内嵌 noVNC（6081 的 CORS 静态服务），也可复制直连地址 `http://<host>:6080/vnc.html`
+- 页面内嵌 noVNC（6081 的 CORS 静态服务，自带 `pages/vnc/viewer.html`），也可复制直连地址 `http://<host>:6080/vnc.html`
+- 内嵌查看器默认「适应窗口」，整个远程桌面完整可见；可切 1:1 或用 ± 调缩放，放大后按住左键拖动平移
+- 插件连接常驻 Chromium 后会把窗口拉满虚拟屏（无窗口管理器时 `--start-maximized` 不生效，会留一块黑边）
 - VNC 默认无密码，只适合内网/本机；对外暴露请自行加密码和 HTTPS 反向代理
 - 镜像缺少 `Xvfb` / `x11vnc` / `novnc` / `websockify` 时需要先安装
 - Docker 部署需要映射 `6080`（noVNC/websockify）和 `6081`（面板内嵌静态服务）；插件会复用已有服务，缺失时自动启动

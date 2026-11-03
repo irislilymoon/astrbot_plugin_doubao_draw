@@ -80,7 +80,14 @@ class VncManager:
         return Path(f"/tmp/.X11-unix/X{self.display_num}").exists()
 
     @property
+    def viewer_file(self) -> Path:
+        """插件自带的查看器（自适应缩放 + 缩放按钮），由本插件静态服务提供。"""
+        return Path(__file__).with_name("pages") / "vnc" / "viewer.html"
+
+    @property
     def embed_viewer(self) -> str:
+        if self.viewer_file.exists():
+            return "viewer.html"
         if (self.web_root / "vnc_lite.html").exists():
             return "vnc_lite.html"
         return self.viewer_path
@@ -91,7 +98,10 @@ class VncManager:
         web = await self._port_open(self.web_port)
         embed = await self._port_open(self.embed_port)
         novnc = (self.web_root / self.viewer_path).exists()
-        embed_viewer = (self.web_root / self.embed_viewer).exists()
+        if self.viewer_file.exists():
+            embed_viewer = True
+        else:
+            embed_viewer = (self.web_root / self.embed_viewer).exists()
         ready = bool(xvfb and rfb and web and novnc)
         return {
             "ready": ready,
@@ -180,6 +190,7 @@ class VncManager:
                         str(script),
                         str(self.embed_port),
                         str(self.web_root),
+                        str(self.viewer_file),
                         log_name="vncweb",
                     )
                     await self._wait(lambda: self._port_open(self.embed_port), 8)

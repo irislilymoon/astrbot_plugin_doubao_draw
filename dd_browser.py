@@ -28,6 +28,7 @@ class BrowserManager:
         self._ctx = None
         self._page = None
         self._external = False
+        self._window_fitted = False
         self._proc = None
         self._start_lock = asyncio.Lock()
         # 生成任务串行执行：一个浏览器只开一个页面
@@ -109,6 +110,7 @@ class BrowserManager:
             if self._external and self._browser is not None and self._browser.is_connected():
                 if not await self._has_gui_window():
                     return await self._recover("浏览器窗口被关闭")
+                await self._fit_window()
                 try:
                     return await self._ensure_startup_page(force=False)
                 except Exception as e:
@@ -216,8 +218,10 @@ class BrowserManager:
             f"--user-data-dir={self.profile_dir}",
             f"--remote-debugging-address={host}",
             f"--remote-debugging-port={port}",
-            "--start-maximized",
-            "--window-size=1280,860",
+            # 无窗口管理器时 --start-maximized 会把窗口缩成 1050x880，留出黑板；
+            # 直接给死位置和尺寸，让浏览器铺满 Xvfb 的 1440x900
+            "--window-position=0,0",
+            "--window-size=1440,900",
             self.startup_url,
         ]
         env = {**os.environ, "DISPLAY": self.display}
@@ -307,10 +311,50 @@ class BrowserManager:
         self._ctx = None
         self._page = None
         self._external = False
+        self._window_fitted = False
 
     def _warn(self, msg: str):
         if self.log:
             self.log.warning(f"[doubao_draw] {msg}")
+
+    async def _fit_window(self, width: int = 1440, height: int = 900):
+        """把 X 里的窗口拉满虚拟屏：没有窗口管理器时 --start-maximized 不生效，
+        窗口会是 1050x880，VNC 画面右侧就空出一块黑的。"""
+        if self._window_fitted or self._page is None:
+            return
+        sess = None
+        try:
+            sess = await self._ctx.new_cdp_session(self._page)
+            info = await sess.send("Browser.getWindowForTarget")
+            wid = info.get("windowId")
+            bounds = info.get("bounds") or {}
+            need = (bounds.get("width") != width or bounds.get("height") != height
+                    or bounds.get("left") != 0 or bounds.get("top") != 0
+                    or bounds.get("windowState") not in (None, "normal"))
+            if wid is not None and need:
+                if bounds.get("windowState") in ("maximized", "fullscreen", "minimized"):
+                    await sess.send(
+                        "Browser.setWindowBounds",
+                        {"windowId": wid, "bounds": {"windowState": "normal"}},
+                    )
+                await sess.send(
+                    "Browser.setWindowBounds",
+                    {"windowId": wid,
+                     "bounds": {"left": 0, "top": 0, "width": width, "height": height,
+                                "windowState": "normal"}},
+                )
+                if self.log:
+                    self.log.info(f"[doubao_draw] 浏览器窗口已铺满：{width}x{height}")
+            self._window_fitted = True
+        except Exception as e:
+            self._window_fitted = True  # 失败也不反复重试
+            self._warn(f"调整浏览器窗口失败：{e}")
+        finally:
+            if sess is not None:
+                try:
+                    await sess.detach()
+                except Exception:
+                    pass
 
     # ---------- 内部 ----------
 
@@ -345,6 +389,7 @@ class BrowserManager:
         self._page = chosen or (pages[-1] if pages else await ctx.new_page())
         if self.log:
             self.log.info(f"[doubao_draw] 已连接常驻 Chromium：{self.cdp_url}")
+        await self._fit_window()
         return True
 
     async def _launch(self):

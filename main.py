@@ -97,7 +97,9 @@ class DoubaoDrawPlugin(Star):
         self._pending_code: dict[str, float] = {}
         self._pending_refs: dict[str, tuple[float, list[bytes]]] = {}
         self._watchdog_task: asyncio.Task | None = None
+        self._vnc_task: asyncio.Task | None = None
         self._llm_switch_task: asyncio.Task | None = None
+        self._start_vnc_watchdog()
         self._start_watchdog_if_needed()
         self._schedule_llm_tool_switch()
 
@@ -382,17 +384,32 @@ class DoubaoDrawPlugin(Star):
         except RuntimeError:
             self._watchdog_task = None
 
+    def _start_vnc_watchdog(self):
+        """VNC 校准独立于浏览器兜底：插件一重载就立刻把认证方式对齐当前配置。"""
+        if not self.config.get("vnc_auto_start", True):
+            return
+        if self._vnc_task and not self._vnc_task.done():
+            return
+        try:
+            self._vnc_task = asyncio.create_task(self._vnc_watchdog())
+        except RuntimeError:
+            self._vnc_task = None
+
+    async def _vnc_watchdog(self):
+        interval = max(5, int(self.config.get("vnc_check_interval", 15)))
+        while True:
+            try:
+                await self.vnc.ensure()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[doubao_draw] VNC 兜底检查异常：{e}")
+            await asyncio.sleep(interval)
+
     async def _browser_watchdog(self):
         interval = max(15, int(self.config.get("watchdog_interval", 30)))
         logger.info(f"[doubao_draw] 浏览器兜底已启用，每 {interval} 秒检查一次")
-        # 首轮立即跑：插件重载后要马上把 x11vnc 的认证方式校准到当前配置，
-        # 否则关掉密码后还会有一段“仍要输密码”的窗口期。
         while True:
-            try:
-                if self.config.get("vnc_auto_start", True):
-                    await self.vnc.ensure()
-            except Exception as e:
-                logger.warning(f"[doubao_draw] VNC 兜底检查异常：{e}")
             try:
                 ok = await self.browser.ensure_alive()
                 if not ok:

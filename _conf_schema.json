@@ -107,7 +107,9 @@
     "description": "VNC 连接密码",
     "type": "string",
     "default": "iris",
-    "hint": "默认 iris，装好后请改成自己的。VNC 协议只使用前 8 个字符，超过部分无效。改完保存并重载插件，或点 VNC 调试页的「启动 / 修复 VNC」让新密码生效。"
+    "secret": true,
+    "obvious_hint": true,
+    "hint": "默认 iris，装好后请改成自己的。设置页只做输入遮罩，配置文件里仍是明文。VNC 协议只使用前 8 个字符，超过部分无效。改完保存并重载插件，或点 VNC 调试页的「启动 / 修复 VNC」让新密码生效。"
   },
   "vnc_bind": {
     "description": "VNC 监听地址",

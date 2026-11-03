@@ -42,11 +42,41 @@
   }
   #reset:hover { opacity: 1; }
   #reset.idle { opacity: .22; }
+  #auth {
+    position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+    background: rgba(8, 11, 20, .72);
+  }
+  #auth.hidden { display: none; }
+  #auth form {
+    width: min(320px, 86vw); padding: 20px; border-radius: 12px;
+    background: #171b2d; color: #e8eaf2; border: 1px solid #2a3050;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #auth .auth-title { font-size: 14px; font-weight: 700; }
+  #auth input {
+    width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid #2a3050; background: #0f1220; color: #e8eaf2; font: inherit;
+  }
+  #auth input:focus { outline: none; border-color: #4f7cff; }
+  #auth button {
+    padding: 8px 10px; border-radius: 8px; border: 0; background: #4f7cff; color: #fff;
+    font: inherit; cursor: pointer;
+  }
+  #auth .auth-err { color: #ff8080; font-size: 12px; min-height: 16px; }
 </style>
 </head>
 <body>
   <div id="screen"></div>
   <div id="msg">正在连接 VNC…</div>
+  <div id="auth" class="hidden">
+    <form id="authForm">
+      <div class="auth-title">VNC 需要密码</div>
+      <input id="authInput" type="password" autocomplete="current-password" placeholder="VNC 密码（默认 iris）">
+      <button type="submit">连接</button>
+      <div id="authErr" class="auth-err"></div>
+    </form>
+  </div>
   <div id="toast"></div>
   <button id="reset" title="回到满屏 100%">100%</button>
 
@@ -62,8 +92,29 @@ const params = new URLSearchParams(location.search);
 const host = params.get('host') || location.hostname;
 const port = params.get('port') || '6080';
 const path = params.get('path') || 'websockify';
-const password = params.get('password') || '';
 const viewOnly = params.get('view_only') === '1';
+
+const authEl = document.getElementById('auth');
+const authForm = document.getElementById('authForm');
+const authInput = document.getElementById('authInput');
+const authErr = document.getElementById('authErr');
+
+function pwdKey() {
+  return 'vnc_pwd_' + host + '_' + port;
+}
+function loadPwd() {
+  try { return sessionStorage.getItem(pwdKey()) || ''; } catch (e) { return ''; }
+}
+function savePwd(v) {
+  try {
+    if (v) sessionStorage.setItem(pwdKey(), v);
+    else sessionStorage.removeItem(pwdKey());
+  } catch (e) {}
+}
+
+let password = params.get('password') || loadPwd();
+let authFailed = false;
+let awaitingPwd = false;
 
 const ZOOM_STEP = 1.1;
 const ZOOM_MAX = 3;
@@ -258,6 +309,31 @@ function onMouseUp(e) {
   }
 }
 
+function showAuth(text) {
+  clearTimeout(retryTimer);
+  authErr.textContent = text || '';
+  authEl.classList.remove('hidden');
+  msgEl.classList.add('hidden');
+  setTimeout(() => { try { authInput.focus(); authInput.select(); } catch (e) {} }, 30);
+}
+
+authForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const v = authInput.value.trim();
+  if (!v) { authErr.textContent = '密码不能为空'; return; }
+  password = v;
+  savePwd(v);
+  authEl.classList.add('hidden');
+  authErr.textContent = '';
+  authFailed = false;
+  if (rfb && awaitingPwd) {
+    awaitingPwd = false;
+    rfb.sendCredentials({ password: v });
+  } else {
+    connect();
+  }
+});
+
 function connect() {
   clearTimeout(retryTimer);
   screenEl.innerHTML = '';
@@ -268,7 +344,10 @@ function connect() {
     rfb = null;
   }
   try {
-    rfb = new RFB(screenEl, wsUrl(), { credentials: { password }, wsProtocols: ['binary'] });
+    const opts = { wsProtocols: ['binary'] };
+    // 空密码不要传：noVNC 只把 undefined 当“未提供”，空串会直接拿去认证然后失败
+    if (password) opts.credentials = { password };
+    rfb = new RFB(screenEl, wsUrl(), opts);
   } catch (e) {
     msgEl.classList.remove('hidden');
     msgEl.textContent = '初始化失败：' + (e && e.message ? e.message : e);
@@ -276,6 +355,9 @@ function connect() {
   }
 
   rfb.addEventListener('connect', () => {
+    authFailed = false;
+    awaitingPwd = false;
+    authEl.classList.add('hidden');
     msgEl.classList.add('hidden');
     setFit();
     if (!hinted) {
@@ -285,15 +367,25 @@ function connect() {
   });
   rfb.addEventListener('disconnect', (e) => {
     const clean = e.detail && e.detail.clean;
-    msgEl.classList.remove('hidden');
-    msgEl.textContent = clean ? '连接已断开，正在重连…' : '连接中断，正在重连…';
     toastEl.classList.remove('show');
+    msgEl.classList.remove('hidden');
+    if (authFailed) {
+      msgEl.textContent = 'VNC 密码错误';
+      showAuth('密码不对，请重新输入');
+      return;
+    }
+    msgEl.textContent = clean ? '连接已断开，正在重连…' : '连接中断，正在重连…';
     clearTimeout(retryTimer);
     retryTimer = setTimeout(connect, RECONNECT_DELAY);
   });
   rfb.addEventListener('credentialsrequired', () => {
-    const pwd = prompt('VNC 密码：') || '';
-    rfb.sendCredentials({ password: pwd });
+    awaitingPwd = true;
+    showAuth('请输入 VNC 密码');
+  });
+  rfb.addEventListener('securityfailure', () => {
+    authFailed = true;
+    password = '';
+    savePwd('');
   });
   rfb.viewOnly = viewOnly;
   setFit();

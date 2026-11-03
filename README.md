@@ -44,6 +44,10 @@
 >
 > `vnc_password_enabled` 可以关闭密码。**关闭等于把无认证的图形桌面交给整个网络**，
 > 只允许在完全隔离的可信内网这么做；关闭时 VNC 调试页会显示红色警告。
+>
+> 设置页里密码以密码框显示（`secret`），这只是界面遮罩：
+> `data/config/astrbot_plugin_doubao_draw_config.json` 里的 `vnc_password` 仍是明文，
+> 任何能读到该文件的人都能看到密码，注意文件权限与备份去向。
 
 ## VNC 图形调试
 
@@ -76,7 +80,7 @@
 | compress_for_qq | 大图转 JPEG 再发 QQ，默认开 |
 | vnc_auto_start | 自动复用/补齐 VNC，默认开 |
 | vnc_password_enabled | VNC 连接需要密码，默认开；关闭后 5900/6080 无认证，仅限可信内网 |
-| vnc_password | VNC 密码，默认 `iris`，**装好请立刻修改**；只取前 8 个字符 |
+| vnc_password | VNC 密码，默认 `iris`，**装好请立刻修改**；设置页以密码框显示，只取前 8 个字符 |
 | vnc_bind | VNC 监听地址，默认 `0.0.0.0`；只在本机用改 `127.0.0.1` |
 | vnc_public_url | VNC 直连地址（可选） |
 | vnc_web_port | noVNC/websockify 端口，默认 6080 |

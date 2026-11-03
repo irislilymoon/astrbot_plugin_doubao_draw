@@ -32,12 +32,23 @@
     opacity: 0; transition: opacity .18s ease; pointer-events: none;
   }
   #toast.show { opacity: 1; }
+  #reset {
+    position: absolute; right: 10px; bottom: 10px; z-index: 5;
+    height: 26px; padding: 0 11px; border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, .18);
+    background: rgba(16, 20, 32, .66); color: #e8eaf2;
+    font: 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    cursor: pointer; opacity: .55; transition: opacity .15s ease;
+  }
+  #reset:hover { opacity: 1; }
+  #reset.idle { opacity: .22; }
 </style>
 </head>
 <body>
   <div id="screen"></div>
   <div id="msg">正在连接 VNC…</div>
   <div id="toast"></div>
+  <button id="reset" title="回到满屏 100%">100%</button>
 
 <script type="module">
 import RFB from './core/rfb.js';
@@ -45,6 +56,7 @@ import RFB from './core/rfb.js';
 const screenEl = document.getElementById('screen');
 const msgEl = document.getElementById('msg');
 const toastEl = document.getElementById('toast');
+const resetBtn = document.getElementById('reset');
 
 const params = new URLSearchParams(location.search);
 const host = params.get('host') || location.hostname;
@@ -107,6 +119,7 @@ function setFit() {
     rfb.scaleViewport = true;
   }
   screenEl.classList.remove('grab');
+  resetBtn.classList.add('idle');
   const s = scrollEl();
   s.scrollLeft = 0;
   s.scrollTop = 0;
@@ -114,7 +127,7 @@ function setFit() {
 
 /**
  * 缩放到 k，锚点是屏幕坐标 (clientX, clientY)。
- * k 不会低于“适应窗口”；双击或 Esc 回到适应窗口。
+ * k 不会低于“满屏 100%”；右下角按钮或 Esc 可以回去。
  */
 function setZoom(k, clientX, clientY) {
   const d = display();
@@ -138,6 +151,7 @@ function setZoom(k, clientX, clientY) {
   rfb.clipViewport = false;
   try { d.scale = k; } catch (e) { /* 版本差异 */ }
   screenEl.classList.add('grab');
+  resetBtn.classList.remove('idle');
 
   // 让同一个远程像素停在光标下
   const s = scrollEl();
@@ -148,18 +162,19 @@ function setZoom(k, clientX, clientY) {
 }
 
 function onWheel(e) {
-  if (!rfb) return;
-  const zoomed = mode === 'zoom';
-  if (e.ctrlKey || e.metaKey) {
+  const zoomMod = e.ctrlKey || e.metaKey;
+  if (zoomMod) {
+    // 先无条件吃掉默认行为：否则浏览器会顺手把整个面板页面放大
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (!rfb) return;
     const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
     setZoom(currentScale() * factor, e.clientX, e.clientY);
     return;
   }
-  if (!zoomed) return;          // 适应窗口时滚轮交给远程页面
+  if (mode !== 'zoom') return;  // 满屏时滚轮交给远程页面
   e.preventDefault();           // 放大状态：滚轮平移视野
-  e.stopPropagation();
+  e.stopImmediatePropagation();
   const s = scrollEl();
   s.scrollLeft += e.deltaX || (e.shiftKey ? e.deltaY : 0);
   s.scrollTop += e.shiftKey ? 0 : e.deltaY;
@@ -265,7 +280,7 @@ function connect() {
     setFit();
     if (!hinted) {
       hinted = true;
-      toast('Ctrl+滚轮缩放，放大后可拖动平移，双击回到满屏', 2800);
+      toast('Ctrl+滚轮缩放，放大后可拖动平移，右下角按钮回满屏', 2800);
     }
   });
   rfb.addEventListener('disconnect', (e) => {
@@ -285,21 +300,20 @@ function connect() {
 }
 
 // Ctrl+滚轮缩放（捕获阶段拦下，别让浏览器把整个面板页面放大）
-screenEl.addEventListener('wheel', onWheel, { passive: false, capture: true });
+document.addEventListener('wheel', onWheel, { passive: false, capture: true });
 screenEl.addEventListener('mousedown', onMouseDown, true);
 window.addEventListener('mousemove', onMouseMove, true);
 window.addEventListener('mouseup', onMouseUp, true);
 
-// 双击 / Esc 回到适应窗口
-screenEl.addEventListener('dblclick', (e) => {
-  if (mode !== 'zoom') return;
-  e.preventDefault();
-  e.stopPropagation();
-  setFit();
-  toast('100%');
-}, true);
+// Esc 回到满屏
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && mode === 'zoom') { setFit(); toast('100%'); }
+});
+
+// 右下角按钮：回到满屏 100%
+resetBtn.addEventListener('click', () => {
+  setFit();
+  toast('100%');
 });
 
 // 容器尺寸变化：放大状态重新套用缩放，适应状态重新算

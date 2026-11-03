@@ -306,6 +306,7 @@ class VncManager:
             "public_url": self.public_url,
             "bind": self.bind or "0.0.0.0",
             "auth_enabled": self.auth_enabled,
+            "password_set": bool(self.password),
             "password_is_default": bool(
                 self.auth_enabled and self.password == self.DEFAULT_PASSWORD
             ),

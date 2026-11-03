@@ -192,8 +192,13 @@
     const isDefault = !!st.password_is_default;
     if (!enabled) {
       authHint.className = "hint err";
-      authHint.textContent = "未启用密码：5900 / 6080 对内网完全开放";
-      authHint.title = "任何能连到这两个端口的人都能直接操作这个浏览器，包括已登录的豆包账号、Cookie 和聊天记录。仅限完全可信的内网使用。";
+      if (st.password_set) {
+        authHint.textContent = "密码已填但开关是关的：当前仍无密码";
+        authHint.title = "vnc_password_enabled 关掉时，vnc_password 填了也不生效。要到插件设置里打开「VNC 连接需要密码」并保存。";
+      } else {
+        authHint.textContent = "未启用密码：5900 / 6080 对内网完全开放";
+        authHint.title = "任何能连到这两个端口的人都能直接操作这个浏览器，包括已登录的豆包账号、Cookie 和聊天记录。仅限完全可信的内网使用。";
+      }
       return;
     }
     if (isDefault) {

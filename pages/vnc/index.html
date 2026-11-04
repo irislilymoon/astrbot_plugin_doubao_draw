@@ -203,8 +203,8 @@
     }
     if (isDefault) {
       authHint.className = "hint warn";
-      authHint.textContent = "正在使用默认密码 iris，请尽快修改";
-      authHint.title = "默认密码是公开值，等于没有防护。到插件设置里把 vnc_password 改成自己的密码。";
+      authHint.textContent = "默认密码 iris 未修改：已强制只允许本机连接";
+      authHint.title = "密码还是公开的 iris，插件强制只监听 127.0.0.1，远程连不上。到插件设置把 vnc_password 改成自己的密码后，vnc_bind 才会按配置生效。";
       return;
     }
     authHint.className = "hint";
@@ -223,8 +223,14 @@
     btnCopy.dataset.url = directUrl;
     // 默认只监听本机：从远程面板打开时提前说清楚，别让用户对着“一直重连”猜
     if (st.bind && isLoopback(st.bind) && !isLoopback(location.hostname)) {
-      setStatus("VNC 只监听 127.0.0.1，远程连不上", "err");
-      showPlaceholder("当前 vnc_bind 是 127.0.0.1，只有服务器本机能连 VNC。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把 vnc_password 从默认的 iris 换掉。", null);
+      const locked = !!st.default_password_locked;
+      setStatus(locked ? "默认密码未修改，VNC 仅限本机" : "VNC 只监听 127.0.0.1，远程连不上", "err");
+      showPlaceholder(
+        locked
+          ? "vnc_password 还是默认的 iris，插件已强制只监听 127.0.0.1，远程连不上。请先到插件配置改掉密码，再把 vnc_bind 改成 0.0.0.0。"
+          : "当前 vnc_bind 是 127.0.0.1，只有服务器本机能连 VNC。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把 vnc_password 从默认的 iris 换掉。",
+        null
+      );
       return;
     }
     if (!st.ready) {

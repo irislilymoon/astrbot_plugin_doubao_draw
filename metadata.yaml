@@ -1,7 +1,7 @@
 name: astrbot_plugin_doubao_draw
 display_name: 豆包生图（网页会话）
 desc: 用你自己的豆包账号在网页端生图：SSE 实时抓原图，/draw 出图，支持比例与参考图，只回图片；VNC 调试默认带密码。
-version: v0.1.5
+version: v0.1.6
 author: "irislilymoon"
 repo: "https://github.com/irislilymoon/astrbot_plugin_doubao_draw"
 tags:

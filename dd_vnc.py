@@ -45,6 +45,9 @@ class VncManager:
         self.password = (password or "").strip()
         # 密码为空时视为未启用，避免出现“要求密码但密码是空串”的尴尬状态
         self.auth_enabled = bool(auth_enabled) and bool(self.password)
+        self.default_password_locked = bool(
+            self.auth_enabled and self.password == self.DEFAULT_PASSWORD
+        )
         self.web_root = Path("/usr/share/novnc")
         self.log_dir = Path(log_dir) if log_dir else Path("/tmp")
         try:
@@ -203,10 +206,17 @@ class VncManager:
             return bool(auth_path) and auth_path in cmd
         return "-nopw" in cmd
 
+    @property
+    def _bind(self) -> str:
+        """真正生效的监听地址：默认密码没改时强制只监听本机。"""
+        if self.default_password_locked:
+            return "127.0.0.1"
+        return self.bind
+
     def _matches_expected_bind(self, cmd: str) -> bool:
-        if not self.bind or self.bind in ("0.0.0.0", "*"):
+        if not self._bind or self._bind in ("0.0.0.0", "*"):
             return "-listen " not in cmd
-        return f"-listen {self.bind}" in cmd
+        return f"-listen {self._bind}" in cmd
 
     def _pid_start_epoch(self, pid: int) -> float:
         try:
@@ -266,8 +276,72 @@ class VncManager:
         await self._wait(self._port_closed, 4)
         return True
 
-    async def _port_closed(self) -> bool:
-        return not await self._port_open(self.rfb_port)
+    async def _port_closed(self, port: int | None = None) -> bool:
+        return not await self._port_open(self.rfb_port if port is None else port)
+
+    async def _procs_matching(self, keyword: str, port: int) -> list[tuple[int, str]]:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "pgrep",
+                "-af",
+                keyword,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except Exception:
+            return []
+        found: list[tuple[int, str]] = []
+        for line in out.decode("utf-8", "ignore").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            pid_s, _, cmd = line.partition(" ")
+            if not pid_s.isdigit() or keyword not in cmd:
+                continue
+            if str(port) not in cmd:
+                continue
+            found.append((int(pid_s), cmd))
+        return found
+
+    async def _kill_procs(self, pids: list[int], port: int) -> None:
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+        if await self._wait(lambda: self._port_closed(port), 3):
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except Exception:
+                pass
+        await self._wait(lambda: self._port_closed(port), 4)
+
+    async def _reconcile_websockify(self) -> bool:
+        """监听地址变了要重启 websockify，否则 6080 还停在旧地址上。"""
+        want = f"{self._bind}:{self.web_port}" if self._bind else str(self.web_port)
+        procs = await self._procs_matching("websockify", self.web_port)
+        stale = [pid for pid, cmd in procs if want not in cmd]
+        if not stale:
+            return False
+        if self.log:
+            self.log.info(f"[doubao_draw] 重启 websockify（监听地址变更），pid={stale}")
+        await self._kill_procs(stale, self.web_port)
+        return True
+
+    async def _reconcile_vncweb(self) -> bool:
+        """6081 静态页同理，host 参数跟着 bind 走。"""
+        want = self._bind or "127.0.0.1"
+        procs = await self._procs_matching("dd_vnc_web.py", self.embed_port)
+        stale = [pid for pid, cmd in procs if want not in cmd]
+        if not stale:
+            return False
+        if self.log:
+            self.log.info(f"[doubao_draw] 重启内嵌静态服务（监听地址变更），pid={stale}")
+        await self._kill_procs(stale, self.embed_port)
+        return True
 
     # ---------------- 状态 ----------------
 
@@ -304,7 +378,8 @@ class VncManager:
             "auth_mismatch": bool(auth_mismatch),
             "url": self.client_url(),
             "public_url": self.public_url,
-            "bind": self.bind or "127.0.0.1",
+            "bind": self._bind or "127.0.0.1",
+            "default_password_locked": self.default_password_locked,
             "auth_enabled": self.auth_enabled,
             "password_set": bool(self.password),
             "password_is_default": bool(
@@ -342,6 +417,12 @@ class VncManager:
             if await self._port_open(self.rfb_port):
                 await self._reconcile_x11vnc(auth_path)
 
+            if await self._port_open(self.web_port):
+                await self._reconcile_websockify()
+
+            if await self._port_open(self.embed_port):
+                await self._reconcile_vncweb()
+
             if not await self._port_open(self.rfb_port):
                 if not shutil.which("x11vnc"):
                     errors.append("缺少 x11vnc")
@@ -358,8 +439,8 @@ class VncManager:
                         "-rfbport",
                         str(self.rfb_port),
                     ]
-                    if self.bind and self.bind not in ("0.0.0.0", "*"):
-                        args += ["-listen", self.bind]
+                    if self._bind and self._bind not in ("0.0.0.0", "*"):
+                        args += ["-listen", self._bind]
                     if auth_path:
                         args += ["-rfbauth", auth_path]
                     else:
@@ -384,8 +465,8 @@ class VncManager:
                         errors.append("缺少 noVNC 静态文件")
                     else:
                         listen = (
-                            f"{self.bind}:{self.web_port}"
-                            if self.bind
+                            f"{self._bind}:{self.web_port}"
+                            if self._bind
                             else str(self.web_port)
                         )
                         await self._spawn(
@@ -410,7 +491,7 @@ class VncManager:
                         str(self.embed_port),
                         str(self.web_root),
                         str(self.viewer_file),
-                        self.bind or "127.0.0.1",
+                        self._bind or "127.0.0.1",
                         log_name="vncweb",
                     )
                     await self._wait(lambda: self._port_open(self.embed_port), 8)

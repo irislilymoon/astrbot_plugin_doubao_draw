@@ -114,7 +114,7 @@
   "vnc_password": {
     "description": "VNC 连接密码",
     "type": "string",
-    "default": "",
+    "default": "iris",
     "secret": true,
     "obvious_hint": true,
     "hint": "留空表示使用出厂默认密码（公开值，装好请直接改成自己的）。密码仍是出厂值时，插件强制只监听 127.0.0.1，远程无法连接；改掉之后 vnc_bind 才按配置生效。设置页只做输入遮罩，配置文件里仍是明文。VNC 协议只使用前 8 个字符。"

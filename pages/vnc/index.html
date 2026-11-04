@@ -217,17 +217,26 @@
     const local = isLoopback(st.bind);
     if (!enabled) {
       authHint.className = "hint err";
-      authHint.textContent = local ? "未启用密码 · 仅本机" : "未启用密码 · 允许远程";
+      authHint.textContent = local
+        ? "未启用密码 · 仅本机；远程请到设置开启"
+        : "未启用密码 · 允许远程";
       authHint.title = local
-        ? "VNC 没有密码，但只监听 127.0.0.1，只有本机能连。"
+        ? "VNC 没有密码且只监听 127.0.0.1，只有本机能连。远程使用请到插件配置开启密码、设置 vnc_password，再把 vnc_bind 改成 0.0.0.0。"
         : "VNC 没有密码且对所有网卡开放，任何能连到 5900 / 6080 的人都能直接操作这个浏览器。";
       return;
     }
     authHint.className = local ? "hint" : "hint warn";
-    authHint.textContent = local ? "仅本机访问" : "允许远程访问";
-    authHint.title = local
-      ? "VNC 只监听 127.0.0.1，只有服务器本机能连。要远程使用，把 vnc_bind 改成 0.0.0.0。"
-      : "VNC 监听所有网卡，远程可以连接。请确保密码足够强，并用防火墙限制来源。";
+    if (local) {
+      authHint.textContent = st.default_password_locked
+        ? "仅本机 · 改密码后可在设置开启远程"
+        : "仅本机访问；远程请到设置开启";
+      authHint.title = st.default_password_locked
+        ? "仍是默认密码时强制只监听 127.0.0.1。请先在插件配置修改 vnc_password，再把 vnc_bind 改成 0.0.0.0。"
+        : "VNC 只监听 127.0.0.1，只有服务器本机能连。远程使用请到插件配置把 vnc_bind 改成 0.0.0.0。";
+    } else {
+      authHint.textContent = "允许远程访问";
+      authHint.title = "VNC 监听所有网卡，远程可以连接。请确保密码足够强，并用防火墙限制来源。";
+    }
   }
 
   function maybePasswordTip(st) {

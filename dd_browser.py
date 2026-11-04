@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -29,6 +30,7 @@ class BrowserManager:
         self._page = None
         self._external = False
         self._window_fitted = False
+        self._headed = False
         self._proc = None
         self._start_lock = asyncio.Lock()
         # 生成任务串行执行：一个浏览器只开一个页面
@@ -92,6 +94,7 @@ class BrowserManager:
         self._pw = None
         self._page = None
         self._external = False
+        self._headed = False
 
     # ---------- 兜底自愈 ----------
 
@@ -108,7 +111,7 @@ class BrowserManager:
                 return False
 
             if self._external and self._browser is not None and self._browser.is_connected():
-                if not await self._has_gui_window():
+                if not self.headless and not await self._has_gui_window():
                     return await self._recover("浏览器窗口被关闭")
                 await self._fit_window()
                 try:
@@ -118,10 +121,132 @@ class BrowserManager:
 
             self._drop_connection()
             if await self._try_connect_cdp():
-                if not await self._has_gui_window():
+                if not self.headless and not await self._has_gui_window():
                     return await self._recover("浏览器窗口被关闭")
                 return await self._ensure_startup_page(force=False)
             return await self._recover("CDP 无响应")
+
+    async def launch_headed(self) -> dict:
+        """用同一个 profile 拉起可见的 Chrome for Testing（供登录/人工操作）。
+
+        先关掉当前无头浏览器，避免同一 profile 被锁；页面由 CDP 接管后，
+        Win 调试面板仍能继续看和操作这个可见窗口。
+        """
+        if os.name != "nt":
+            raise RuntimeError("仅 Windows 支持直接拉起可见 Chrome")
+        exe = self._find_chromium()
+        if not exe:
+            raise RuntimeError("找不到 Chromium/Chrome 可执行文件，请检查 chromium_path")
+
+        if self._ctx is None:
+            await self.ensure_alive()
+
+        async with self._start_lock:
+            if self._headed and self._browser is not None and self._browser.is_connected():
+                await self._ensure_startup_page(force=False)
+                return {"ok": True, "reused": True}
+
+            await self._close_cdp_browser()
+            if not await self._wait_cdp_down(2.5):
+                await self._force_close_cdp_browser()
+                if not await self._wait_cdp_down(4.0):
+                    raise RuntimeError("当前浏览器没有退出，无法拉起可见 Chrome")
+            # 端口关闭后再给 profile 锁一点释放时间。
+            await asyncio.sleep(0.6)
+            self._drop_connection()
+            for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                try:
+                    (self.profile_dir / name).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            parsed = urlparse(self.cdp_url or "")
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 9222
+            args = [
+                "--hide-crash-restore-bubble",
+                "--disable-pings",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--lang=zh-CN",
+                f"--user-data-dir={self.profile_dir}",
+                f"--remote-debugging-address={host}",
+                f"--remote-debugging-port={port}",
+                "--window-position=0,0",
+                "--window-size=1440,900",
+                self.startup_url,
+            ]
+            env = {**os.environ}
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    exe,
+                    *args,
+                    env=env,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except Exception as e:
+                raise RuntimeError(f"拉起 Chrome 失败：{e}") from e
+
+            for _ in range(40):
+                await asyncio.sleep(0.5)
+                if await self._try_connect_cdp():
+                    await self._ensure_startup_page(force=False)
+                    self._headed = True
+                    self._window_fitted = True
+                    if self.log:
+                        self.log.info("[doubao_draw] 已拉起可见 Chrome 调试窗口")
+                    return {
+                        "ok": True,
+                        "reused": False,
+                        "pid": self._proc.pid if self._proc else None,
+                    }
+            raise RuntimeError("Chrome 已启动，但 CDP 端口仍不可用")
+
+    async def _wait_cdp_down(self, timeout: float) -> bool:
+        parsed = urlparse(self.cdp_url or "")
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 9222
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while loop.time() < deadline:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port), timeout=0.4
+                )
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            except Exception:
+                return True
+            await asyncio.sleep(0.2)
+        return False
+
+    async def _force_close_cdp_browser(self) -> None:
+        """Playwright 会话关不掉时，用 CDP 的 Browser.close 兜底。"""
+        try:
+            import aiohttp
+        except Exception:
+            return
+        base = (self.cdp_url or "").rstrip("/")
+        try:
+            timeout = aiohttp.ClientTimeout(total=3)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(base + "/json/version") as resp:
+                    info = await resp.json()
+                ws_url = info.get("webSocketDebuggerUrl")
+                if not ws_url:
+                    return
+                async with session.ws_connect(ws_url, timeout=2) as ws:
+                    await ws.send_json({"id": 1, "method": "Browser.close"})
+                    try:
+                        await ws.receive(timeout=1)
+                    except Exception:
+                        pass
+        except Exception as e:
+            self._warn(f"CDP 关闭浏览器失败：{e}")
 
     async def _ensure_startup_page(self, force: bool = False) -> bool:
         try:
@@ -198,7 +323,10 @@ class BrowserManager:
 
         exe = self._find_chromium()
         if not exe:
-            self._warn("找不到 Chromium 可执行文件")
+            self._warn(
+                "找不到 Chromium/Chrome/Edge，请安装 Chrome/Edge，"
+                "或执行 playwright install chromium"
+            )
             return False
         parsed = urlparse(self.cdp_url or "")
         host = parsed.hostname or "127.0.0.1"
@@ -222,17 +350,30 @@ class BrowserManager:
             # 直接给死位置和尺寸，让浏览器铺满 Xvfb 的 1440x900
             "--window-position=0,0",
             "--window-size=1440,900",
-            self.startup_url,
         ]
+        # Windows 的 Win 调试只能看 CDP 画面，恢复路径也必须保持无头；
+        # Linux 的 VNC 调试仍需要真实窗口，不能套用这组参数。
+        if os.name == "nt" and self.headless:
+            args += [
+                "--headless=new",
+                "--hide-scrollbars",
+                "--mute-audio",
+                "--force-device-scale-factor=1",
+            ]
+        args.append(self.startup_url)
         env = {**os.environ, "DISPLAY": self.display}
+        kwargs = {
+            "env": env,
+            "stdout": asyncio.subprocess.DEVNULL,
+            "stderr": asyncio.subprocess.DEVNULL,
+        }
+        if os.name != "nt":
+            kwargs["start_new_session"] = True
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 exe,
                 *args,
-                env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=True,
+                **kwargs,
             )
         except Exception as e:
             self._warn(f"拉起 Chromium 失败：{e}")
@@ -242,10 +383,11 @@ class BrowserManager:
             await asyncio.sleep(0.5)
             if await self._try_connect_cdp():
                 await self._ensure_startup_page(force=True)
-                for _ in range(20):
-                    if await self._has_gui_window():
-                        break
-                    await asyncio.sleep(0.5)
+                if not self.headless:
+                    for _ in range(20):
+                        if await self._has_gui_window():
+                            break
+                        await asyncio.sleep(0.5)
                 if self.log:
                     self.log.info("[doubao_draw] 常驻 Chromium 已自动拉起")
                 return True
@@ -253,6 +395,12 @@ class BrowserManager:
         return False
 
     async def _kill_profile_chromium(self):
+        if os.name == "nt":
+            # Windows 没有 pkill，也绝不按 chrome.exe 全量杀进程。
+            # 先通过 CDP 让本插件连着的那个浏览器自己退出。
+            await self._close_cdp_browser()
+            await asyncio.sleep(1.2)
+            return
         profile = str(self.profile_dir)
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -264,6 +412,25 @@ class BrowserManager:
         except Exception:
             pass
         await asyncio.sleep(1.2)
+
+    async def _close_cdp_browser(self):
+        """关闭当前 CDP 连接对应的浏览器；只用于本插件自管的 profile。"""
+        browser = self._browser
+        if browser is None or not browser.is_connected():
+            return
+        try:
+            sess = await browser.new_browser_cdp_session()
+        except Exception:
+            return
+        try:
+            await sess.send("Browser.close")
+        except Exception:
+            pass
+        finally:
+            try:
+                await sess.detach()
+            except Exception:
+                pass
 
     async def _has_gui_window(self) -> bool:
         try:
@@ -289,19 +456,66 @@ class BrowserManager:
         return False
 
     def _find_chromium(self) -> str | None:
-        candidates = []
+        candidates: list[str] = []
         if self.executable_path:
             candidates.append(self.executable_path)
-        candidates += [
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-            "/usr/bin/google-chrome",
-            "/usr/bin/google-chrome-stable",
-        ]
+
+        if os.name == "nt":
+            for env_name in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
+                base = os.environ.get(env_name)
+                if not base:
+                    continue
+                candidates += [
+                    str(Path(base) / "Google/Chrome/Application/chrome.exe"),
+                    str(Path(base) / "Microsoft/Edge/Application/msedge.exe"),
+                ]
+            local = os.environ.get("LOCALAPPDATA")
+            if local:
+                cache = Path(local) / "ms-playwright"
+                for pattern in (
+                    "chromium-*/chrome-win64/chrome.exe",
+                    "chromium-*/chrome-win/chrome.exe",
+                    "chromium_headless_shell-*/chrome-win64/chrome.exe",
+                ):
+                    try:
+                        candidates += sorted(
+                            (str(p) for p in cache.glob(pattern)), reverse=True
+                        )
+                    except Exception:
+                        pass
+        else:
+            candidates += [
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/usr/bin/google-chrome",
+                "/usr/bin/google-chrome-stable",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            ]
+            for name in ("chromium", "chromium-browser", "google-chrome",
+                         "google-chrome-stable", "msedge", "chrome"):
+                try:
+                    found = shutil.which(name)
+                    if found:
+                        candidates.append(found)
+                except Exception:
+                    continue
+
+        # Playwright 自己下载的 Chromium 也作为兜底；未安装浏览器时
+        # executable_path 可能指向并不存在的默认路径，不能直接采用。
+        try:
+            if self._pw is not None:
+                pw_exe = getattr(self._pw.chromium, "executable_path", None)
+                if pw_exe:
+                    candidates.append(str(pw_exe))
+        except Exception:
+            pass
+
         for c in candidates:
             try:
-                if Path(c).exists():
-                    return c
+                p = Path(c).expanduser()
+                if p.is_file():
+                    return str(p)
             except Exception:
                 continue
         return None
@@ -312,15 +526,15 @@ class BrowserManager:
         self._page = None
         self._external = False
         self._window_fitted = False
+        self._headed = False
 
     def _warn(self, msg: str):
         if self.log:
             self.log.warning(f"[doubao_draw] {msg}")
 
     async def _fit_window(self, width: int = 1440, height: int = 900):
-        """把 X 里的窗口拉满虚拟屏：没有窗口管理器时 --start-maximized 不生效，
-        窗口会是 1050x880，VNC 画面右侧就空出一块黑的。"""
-        if self._window_fitted or self._page is None:
+        """把有头窗口拉满虚拟屏；无头模式没有窗口可调，直接跳过。"""
+        if self.headless or self._window_fitted or self._page is None:
             return
         sess = None
         try:
@@ -420,10 +634,19 @@ class BrowserManager:
             args=args,
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
-            viewport={"width": 1280, "height": 860},
+            # Windows 的 Win 调试直接看这块 viewport，按 VNC 常用的 1440x900 对齐；
+            # Linux 保持原来的 1280x860，避免影响 VNC 现有布局。
+            viewport=(
+                {"width": 1440, "height": 900}
+                if os.name == "nt" else {"width": 1280, "height": 860}
+            ),
         )
         if self.executable_path:
-            kwargs["executable_path"] = self.executable_path
+            try:
+                if Path(self.executable_path).is_file():
+                    kwargs["executable_path"] = self.executable_path
+            except Exception:
+                pass
 
         self._ctx = await self._pw.chromium.launch_persistent_context(**kwargs)
         self._ctx.set_default_timeout(15000)

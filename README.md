@@ -30,7 +30,7 @@
 > [!WARNING]
 > **调试密码默认是 `iris`，装好后第一件事就是改掉它。**
 >
-> VNC 调试和 Win 调试共用同一个密码（`vnc_password`）和监听地址（`vnc_bind`），改一处两边同时生效。
+> VNC 调试使用 `vnc_password` / `vnc_bind`；Win 调试不再提供内嵌画面，只负责拉起本机可见 Chrome。
 >
 > 插件拉起的 x11vnc 默认只监听 `127.0.0.1:5900`，noVNC/websockify 与面板内嵌静态页同样默认只监听
 > `127.0.0.1`，**默认只有本机能连**。如果你为了用远程面板把 `vnc_bind` 改成 `0.0.0.0`，
@@ -57,7 +57,7 @@
 
 ## 图形调试
 
-插件 WebUI 的调试页由 `debug_platform` 决定只显示一个：Linux / 容器显示「VNC 调试」，Windows 显示「Win 调试」。两者能力一致——看画面、点鼠标、敲键盘、复制直连地址在浏览器里打开；密码和监听地址共用同一套配置。
+插件 WebUI 的调试页由 `debug_platform` 决定只显示一个：Linux / 容器显示「VNC 调试」，Windows 显示「Win 调试」。Windows 页只提供「打开浏览器」按钮，不再内嵌画面。
 
 ### Linux / 容器：VNC
 
@@ -74,31 +74,27 @@
 
 ### Windows：Win 调试
 
-Windows 没有 X11，`x11vnc` / `Xvfb` / noVNC 这套跑不起来，VNC 调试页会直接报「缺少 x11vnc」。插件改用 CDP 取画面，逻辑和 VNC 页完全对齐：
+Windows 不再提供内嵌画面，也不启动 6090 推流服务。Win 调试页只保留顶部横幅和「打开浏览器」：
 
-- 原理：连 `127.0.0.1:9222`（插件启动 Chromium 时开的调试端口），用 `Page.startScreencast` 持续收 JPEG 帧，用 `Input.*` 把鼠标键盘回送；不依赖任何 X11 组件
-- 浏览器打开 `http://127.0.0.1:6090` 即可查看并操作；面板内嵌同一个地址，也可以复制直连地址到任意浏览器
-- 画面只在**有变化**时推送，页面静止时零流量；顶栏显示「画面静止」是正常现象，不是连接断了
-- 密码与监听地址与 VNC 共用：`vnc_password_enabled` / `vnc_password` / `vnc_bind`；密码仍是默认 `iris` 时同样强制只监听 `127.0.0.1`
-- 需要密码时，页面中央会显示登录框，**只填密码**（取 `vnc_password`），没有用户名字段；登录后 24 小时内免再次输入，Cookie 名为 `dd_session`
-- 校验通过才建立画面通道：未登录访问 `/ws` 直接返回 401，密码错误会延迟 0.4 秒再报错，避免被快速试密码
-- 关掉 `winvnc_auto_start` 后不自动拉起，可到「Win 调试」页点「启动 / 修复」
-- 面板是 HTTPS 而画面服务是 HTTP 时，浏览器会拦截内嵌，此时用「复制直连地址」在新窗口打开
+- 点击「打开浏览器」会用插件自己的 profile 拉起 **可见的 Chrome for Testing**，可直接在桌面登录或操作
+- 不会在进入侧栏、刷新、启动时自动弹窗；只有点击按钮才会拉起
+- 启用 `vnc_password_enabled` 时，Win 页先要求输入 `vnc_password`，解锁后才启用按钮；token 只存在页面内存，重载插件即失效
+- 不再监听 6090，没有可直连的内网画面端口；入口只有 6085 面板，受面板登录和插件密码双重限制
+- 关闭可见 Chrome 后，插件 watchdog 会恢复后台无头浏览器，保证后续 `/draw` 继续可用
+- Windows 会自动查找 Chrome、Edge 和 Playwright 自带 Chromium；`chromium_path` 留空或路径无效也能启动
+- Linux/容器的 VNC 调试页不受影响
 
-Windows 上还有两处必须手动配，否则浏览器根本起不来：
-
-| 项 | 怎么改 |
+| 项 | 说明 |
 | --- | --- |
-| `chromium_path` | 指向本机实际存在的 `chrome.exe`，例如 `C:\Users\<你>\AppData\Local\ms-playwright\chromium-1248\chrome-win64\chrome.exe`。默认值 `/usr/bin/chromium` 在 Windows 上不存在 |
-| `headless` | 想直接在桌面看到窗口就设 `false`；设 `true` 则完全靠「Win 调试」页看画面 |
+| `chromium_path` | 建议指向本机 `chrome.exe`；留空或路径不存在时自动查找 Chrome、Edge、Playwright Chromium |
+| `headless` | Windows 后台浏览器默认无头；点击「打开浏览器」时才拉起可见 Chrome |
+| `winvnc_cdp_port` | 浏览器调试端口（CDP），默认 9222 |
 
-调试时可以手动起一个带调试端口的浏览器，插件启动时会优先接管它，不会另起一个：
+需要接管已有浏览器时，可以手动起一个带调试端口的 Chrome：
 
 ```
 chrome.exe --remote-debugging-port=9222 --user-data-dir="<插件数据目录>\profile" https://www.doubao.com/chat/
 ```
-
-这条命令的好处是可以随时开关：要调试就起，调试完关掉，插件下次按 `headless` 配置自己拉。
 
 ## 失败怎么处理
 
@@ -124,20 +120,18 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir="<插件数据目录>\pr
 | vnc_rfb_port | x11vnc 端口，默认 5900 |
 | vnc_display | X 显示，默认 :99 |
 | debug_platform | 调试页显示：`auto` 按系统判断 / `linux` 用 VNC 调试 / `windows` 用 Win 调试，默认 `auto`；改完需重载插件 |
-| winvnc_auto_start | Windows 上自动拉起画面服务，默认开 |
-| winvnc_port | Win 调试画面端口，默认 6090；监听地址受 `vnc_bind` 控制，默认只有本机能连 |
-| winvnc_cdp_port | 浏览器调试端口（CDP），默认 9222，画面服务靠它取帧和回送输入 |
+| winvnc_cdp_port | 浏览器调试端口（CDP），默认 9222；插件靠它接管浏览器 |
 | cooldown | 单用户冷却，默认 20 秒 |
 | daily_limit | 每人每日张数，0 为不限 |
 | max_refs | 参考图上限 |
-| headless | 默认 true；Windows 想直接在桌面看到浏览器窗口就改 false |
-| chromium_path | 默认 `/usr/bin/chromium`；**Windows 必须改成本机 `chrome.exe` 的绝对路径**，否则浏览器起不来 |
+| headless | 默认 true；Windows 的 Win 调试默认固定无头，只有点击「打开浏览器」会拉起可见 Chrome。此开关只影响 Linux/容器的 VNC 相关启动路径 |
+| chromium_path | 默认 `/usr/bin/chromium`；路径无效时自动查找 Chrome、Edge、Playwright Chromium，三者都没有才会启动失败 |
 | profile_dir | 登录态目录，留空用插件数据目录 |
 | chat_url | 豆包对话页 |
 | browser_watchdog | 浏览器兜底自愈，默认开 |
 | watchdog_interval | 兜底检查间隔，默认 30 秒 |
 
-浏览器兜底：每 30 秒检查一次，浏览器窗口被误关、页面全关或 Chromium 卡死时会自动重新拉起并打开豆包页。
+浏览器兜底：Windows 每 3 秒检查一次（其他平台按 `watchdog_interval`），浏览器窗口被误关、页面全关或 Chromium 卡死时会自动重新拉起并打开豆包页。
 
 ## 改版了怎么办
 
@@ -148,7 +142,7 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir="<插件数据目录>\pr
 ## 注意
 
 - 这是网页自动化，不是官方接口；豆包改版会失效，账号也可能被风控。
-- **调试端口不要裸奔在公网**：Linux 侧是 `5900` / `6080` / `6081`，Windows 侧是 `6090`；默认都只监听 `127.0.0.1`；改成 `0.0.0.0` 之前必须先换掉默认密码 `iris`。
-- Windows 上 VNC 调试页不可用是设计限制，不是故障：系统没有 X11，`x11vnc` / `Xvfb` 无从运行。用「Win 调试」页，看画面和操作的能力等价。
+- **调试端口不要裸奔在公网**：Linux 侧是 `5900` / `6080` / `6081`；默认都只监听 `127.0.0.1`；改成 `0.0.0.0` 之前必须先换掉默认密码 `iris`。Windows 不再开放 6090 调试 Web 端口。
+- Windows 上 VNC 调试页不可用是设计限制，不是故障：系统没有 X11，`x11vnc` / `Xvfb` 无从运行。Win 调试页用于直接拉起可见 Chrome。
 - 默认 20 秒冷却、每日限额，只适合自己或小群用。
 - 2C2G 机器跑 Chromium 偏紧，出现 OOM 就把 `renderer-process-limit` 调小或加 swap。

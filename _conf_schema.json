@@ -68,12 +68,13 @@
     "description": "无头模式运行浏览器",
     "type": "bool",
     "default": true,
-    "hint": "服务器上保持开启；排查问题时关掉可看窗口（需要图形环境）"
+    "hint": "Windows 的 Win 调试默认固定无头；只有点击面板「打开浏览器」时会拉起可见 Chrome。该开关只影响 Linux/容器的 VNC 相关启动路径"
   },
   "chromium_path": {
     "description": "Chromium 可执行文件路径",
     "type": "string",
-    "default": "/usr/bin/chromium"
+    "default": "/usr/bin/chromium",
+    "hint": "留空或路径无效时会自动查找本机 Chrome、Edge 和 Playwright 自带 Chromium；三者都没有才会启动失败"
   },
   "profile_dir": {
     "description": "浏览器用户数据目录（保存登录态）",
@@ -105,19 +106,19 @@
     "hint": "已有 Xvfb/x11vnc/noVNC 就复用，缺失时自动拉起"
   },
   "vnc_password_enabled": {
-    "description": "VNC 连接需要密码",
+    "description": "VNC / Win 调试需要密码",
     "type": "bool",
     "default": true,
     "obvious_hint": true,
-    "hint": "必须打开这个开关，vnc_password 才会生效；只填密码、开关关着，VNC 仍然是无密码的。关闭后 5900/6080 变成无认证的图形桌面：任何能连到这两个端口的人都能直接操作浏览器，包括已登录的豆包账号、Cookie 和聊天记录。只允许在完全可信的内网关闭。"
+    "hint": "必须打开这个开关，vnc_password 才会生效。Linux 的 VNC 和 Win 调试页的「打开浏览器」都会受它保护；只填密码、开关关着，两边都不需要密码。关闭后 5900/6080 变成无认证图形桌面，Win 页也会直接允许打开浏览器，只允许在完全可信的内网关闭。"
   },
   "vnc_password": {
-    "description": "VNC 连接密码",
+    "description": "VNC / Win 调试密码",
     "type": "string",
     "default": "iris",
     "secret": true,
     "obvious_hint": true,
-    "hint": "留空表示使用出厂默认密码（公开值，装好请直接改成自己的）。密码仍是出厂值时，插件强制只监听 127.0.0.1，远程无法连接；改掉之后 vnc_bind 才按配置生效。设置页只做输入遮罩，配置文件里仍是明文。VNC 协议只使用前 8 个字符。"
+    "hint": "留空表示使用出厂默认密码（公开值，装好请直接改成自己的）。VNC 与 Win 调试页的解锁共用这个密码；Win 页只把解锁 token 放在页面内存，不写 Cookie/localStorage。密码仍是出厂值时，VNC 强制只监听 127.0.0.1。设置页只做输入遮罩，配置文件里仍是明文。VNC 协议只使用前 8 个字符。"
   },
   "vnc_bind": {
     "description": "VNC 监听地址",
@@ -162,24 +163,12 @@
       "windows"
     ],
     "default": "auto",
-    "hint": "决定侧栏显示「VNC 调试」还是「Win 调试」。auto 按当前系统自动判断；两边只是画面来源不同，密码、监听地址等配置完全共用。修改后需重载插件"
-  },
-  "winvnc_auto_start": {
-    "description": "自动启动 Win 调试",
-    "type": "bool",
-    "default": true,
-    "hint": "仅 Windows 有效。插件启动后自动拉起画面服务，面板「Win 调试」页可直接看和操作浏览器"
-  },
-  "winvnc_port": {
-    "description": "Win 调试画面端口",
-    "type": "int",
-    "default": 6090,
-    "hint": "浏览器打开 http://127.0.0.1:该端口 即可查看并操作浏览器，只监听本机"
+    "hint": "决定侧栏显示「VNC 调试」还是「Win 调试」。auto 按当前系统自动判断；Linux 提供 VNC 画面，Windows 只提供「打开浏览器」。修改后需重载插件"
   },
   "winvnc_cdp_port": {
     "description": "调试端口（CDP）",
     "type": "int",
     "default": 9222,
-    "hint": "插件启动 Chromium 时使用的远程调试端口，画面服务靠它取帧和回送输入"
+    "hint": "插件启动/接管浏览器使用的远程调试端口；Win 调试页拉起可见 Chrome 时也用它"
   }
 }

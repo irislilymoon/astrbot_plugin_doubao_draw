@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import re
+import secrets
 import shutil
 import sys
 import time
@@ -22,6 +24,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 import astrbot.api.message_components as Comp
 
 PLUGIN_NAME = "astrbot_plugin_doubao_draw"
+WINVNC_TOKEN_TTL = 8 * 3600
 
 # 模块级单例：AstrBot 重载插件时旧实例的 terminate 不一定来得及跑，
 # 这里用全局变量保证同一时刻只有一个 VNC 校准任务，避免新旧实例互相杀 x11vnc。
@@ -31,7 +34,7 @@ _BASE = Path(__file__).parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
-for _m in ("dd_selectors", "dd_browser", "dd_store", "dd_doubao", "dd_vnc", "dd_winvnc"):
+for _m in ("dd_selectors", "dd_browser", "dd_store", "dd_doubao", "dd_vnc"):
     sys.modules.pop(_m, None)
 
 import dd_browser  # noqa: E402
@@ -39,7 +42,6 @@ import dd_doubao  # noqa: E402
 import dd_selectors  # noqa: E402
 import dd_store  # noqa: E402
 import dd_vnc  # noqa: E402
-import dd_winvnc  # noqa: E402
 
 RATIO_RE = re.compile(r"^(\d{1,2}:\d{1,2})[\s,，、]+(.+)$", re.S)
 CMD_RE = re.compile(r"^[/!.]?\s*(?:doubao_draw|draw|绘图|画图)\s*", re.I)
@@ -72,8 +74,11 @@ class DoubaoDrawPlugin(Star):
         self.browser = dd_browser.BrowserManager(
             profile_dir=profile,
             executable_path=str(config.get("chromium_path") or "") or None,
-            headless=bool(config.get("headless", True)),
+            # Windows 的 Win 调试依赖 CDP 推流，浏览器必须保持无头；
+            # Linux 仍按原配置决定是否给 VNC 一个有头窗口。
+            headless=True if sys.platform.startswith("win") else bool(config.get("headless", True)),
             logger=logger,
+            cdp_url=f"http://127.0.0.1:{int(config.get('winvnc_cdp_port', 9222))}",
             startup_url=chat_url,
         )
         self.doubao = dd_doubao.DoubaoWeb(
@@ -99,25 +104,17 @@ class DoubaoDrawPlugin(Star):
             bind=str(config.get("vnc_bind") or "127.0.0.1"),
         )
         self._register_vnc_api()
-        self.winvnc = dd_winvnc.WinVncManager(
-            port=int(config.get("winvnc_port", 6090)),
-            cdp_url=f"http://127.0.0.1:{int(config.get('winvnc_cdp_port', 9222))}",
-            logger=logger,
-            password=str(config.get("vnc_password") or dd_vnc.VncManager.DEFAULT_PASSWORD),
-            auth_enabled=bool(config.get("vnc_password_enabled", True)),
-            bind=str(config.get("vnc_bind") or "127.0.0.1"),
-        )
         self._sync_debug_pages()
         self._register_winvnc_api()
         self._last_at: dict[str, float] = {}
         self._pending_code: dict[str, float] = {}
         self._pending_refs: dict[str, tuple[float, list[bytes]]] = {}
+        # Win 调试页的短期解锁 token；只存内存，重载插件即失效。
+        self._winvnc_tokens: dict[str, float] = {}
         self._watchdog_task: asyncio.Task | None = None
         self._vnc_task: asyncio.Task | None = None
-        self._winvnc_task: asyncio.Task | None = None
         self._llm_switch_task: asyncio.Task | None = None
         self._start_vnc_watchdog()
-        self._start_winvnc_autostart()
         self._start_watchdog_if_needed()
         self._schedule_llm_tool_switch()
 
@@ -429,50 +426,97 @@ class DoubaoDrawPlugin(Star):
                 f"/{PLUGIN_NAME}/winvnc/status",
                 self._winvnc_status,
                 ["GET"],
-                "Windows debug status",
+                "Windows debug lock status",
             )
             self.context.register_web_api(
-                f"/{PLUGIN_NAME}/winvnc/ensure",
-                self._winvnc_ensure,
+                f"/{PLUGIN_NAME}/winvnc/auth",
+                self._winvnc_auth,
                 ["POST"],
-                "Ensure Windows debug service",
+                "Unlock Windows debug page",
+            )
+            self.context.register_web_api(
+                f"/{PLUGIN_NAME}/winvnc/open",
+                self._winvnc_open,
+                ["POST"],
+                "Launch headed Chrome debug window",
             )
         except Exception as e:
             logger.warning(f"[doubao_draw] Win 调试 API 注册失败：{e}")
 
+    def _winvnc_password(self) -> str:
+        return str(
+            self.config.get("vnc_password")
+            or dd_vnc.VncManager.DEFAULT_PASSWORD
+        )
+
+    def _winvnc_auth_enabled(self) -> bool:
+        return bool(self.config.get("vnc_password_enabled", True))
+
+    def _winvnc_purge_tokens(self) -> None:
+        now = time.monotonic()
+        for token, exp in list(self._winvnc_tokens.items()):
+            if exp <= now:
+                self._winvnc_tokens.pop(token, None)
+
     async def _winvnc_status(self):
-        try:
-            return {"status": "ok", "data": await self.winvnc.status()}
-        except Exception as e:
-            return {"status": "error", "message": str(e), "data": {}}
+        return {
+            "status": "ok",
+            "data": {
+                "supported": sys.platform.startswith("win"),
+                "auth_enabled": self._winvnc_auth_enabled(),
+                "password_is_default": bool(
+                    self._winvnc_auth_enabled()
+                    and self._winvnc_password() == dd_vnc.VncManager.DEFAULT_PASSWORD
+                ),
+            },
+        }
 
-    async def _winvnc_ensure(self):
+    async def _winvnc_auth(self):
+        """Win 页解锁只校验密码，不下发任何网络画面服务。"""
         try:
-            return {"status": "ok", "data": await self.winvnc.ensure()}
-        except Exception as e:
-            return {"status": "error", "message": str(e), "data": {}}
+            from astrbot.api.web import request as web_request
 
-    def _start_winvnc_autostart(self):
-        if not self.config.get("winvnc_auto_start", True):
-            return
-        try:
-            self._winvnc_task = asyncio.create_task(self._winvnc_autostart())
-        except RuntimeError:
-            self._winvnc_task = None
-
-    async def _winvnc_autostart(self):
-        """等浏览器就绪后再拉画面服务，避免一启动就报连不上 9222。"""
-        await asyncio.sleep(4)
-        try:
-            st = await self.winvnc.ensure()
-            if st.get("ready"):
-                logger.info(
-                    f"[doubao_draw] Win 调试已就绪：http://127.0.0.1:{st.get('web_port')}"
-                )
-        except asyncio.CancelledError:
-            raise
+            body = await web_request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            if not self._winvnc_auth_enabled():
+                return {"status": "ok", "data": {
+                    "ok": True, "need_password": False, "token": "",
+                }}
+            given = str(body.get("password") or "")
+            expected = self._winvnc_password()
+            if not hmac.compare_digest(given, expected):
+                await asyncio.sleep(0.4)
+                return {"status": "error", "message": "密码错误",
+                        "data": {"ok": False, "need_password": True}}
+            self._winvnc_purge_tokens()
+            token = secrets.token_urlsafe(32)
+            self._winvnc_tokens[token] = time.monotonic() + WINVNC_TOKEN_TTL
+            return {"status": "ok", "data": {
+                "ok": True, "need_password": True, "token": token,
+            }}
         except Exception as e:
-            logger.warning(f"[doubao_draw] Win 调试服务自动启动失败：{e}")
+            return {"status": "error", "message": str(e), "data": {"ok": False}}
+
+    async def _winvnc_open(self):
+        """Windows 调试只拉起可见 Chrome，不再提供内嵌推流。"""
+        try:
+            from astrbot.api.web import request as web_request
+
+            body = await web_request.json(default={}) or {}
+            if not isinstance(body, dict):
+                body = {}
+            if self._winvnc_auth_enabled():
+                self._winvnc_purge_tokens()
+                token = str(body.get("token") or "")
+                exp = self._winvnc_tokens.get(token)
+                if not exp or exp <= time.monotonic():
+                    return {"status": "error", "message": "登录已过期，请重新输入密码",
+                            "data": {"ok": False, "need_password": True}}
+            data = await self.browser.launch_headed()
+            return {"status": "ok", "data": data}
+        except Exception as e:
+            return {"status": "error", "message": str(e), "data": {"ok": False}}
 
     def _start_watchdog_if_needed(self):
         if not self.config.get("browser_watchdog", True):
@@ -512,6 +556,10 @@ class DoubaoDrawPlugin(Star):
 
     async def _browser_watchdog(self):
         interval = max(15, int(self.config.get("watchdog_interval", 30)))
+        # Win 调试页关闭可见浏览器后，需要尽快拉起新的无头浏览器；
+        # 否则面板会长时间停在“正在恢复”。Linux 维持原间隔。
+        if sys.platform.startswith("win"):
+            interval = 3
         logger.info(f"[doubao_draw] 浏览器兜底已启用，每 {interval} 秒检查一次")
         while True:
             try:

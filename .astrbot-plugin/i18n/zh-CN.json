@@ -6,6 +6,10 @@
     "vnc": {
       "title": "VNC 调试",
       "description": "查看浏览器画面并直接操作；VNC 缺失时自动补齐。"
+    },
+    "win": {
+      "title": "Win 调试",
+      "description": "查看无头浏览器画面并直接操作；需要密码时先解锁。"
     }
   }
 }

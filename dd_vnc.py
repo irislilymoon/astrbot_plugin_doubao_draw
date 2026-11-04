@@ -32,7 +32,7 @@ class VncManager:
         state_dir: str | None = None,
         password: str = "iris",
         auth_enabled: bool = True,
-        bind: str = "0.0.0.0",
+        bind: str = "127.0.0.1",
     ):
         self.log = logger
         self.display = display or ":99"
@@ -304,7 +304,7 @@ class VncManager:
             "auth_mismatch": bool(auth_mismatch),
             "url": self.client_url(),
             "public_url": self.public_url,
-            "bind": self.bind or "0.0.0.0",
+            "bind": self.bind or "127.0.0.1",
             "auth_enabled": self.auth_enabled,
             "password_set": bool(self.password),
             "password_is_default": bool(
@@ -410,7 +410,7 @@ class VncManager:
                         str(self.embed_port),
                         str(self.web_root),
                         str(self.viewer_file),
-                        self.bind or "0.0.0.0",
+                        self.bind or "127.0.0.1",
                         log_name="vncweb",
                     )
                     await self._wait(lambda: self._port_open(self.embed_port), 8)

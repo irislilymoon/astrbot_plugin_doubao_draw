@@ -212,10 +212,21 @@
     authHint.title = "";
   }
 
+  function isLoopback(host) {
+    const h = (host || "").trim().toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "::1";
+  }
+
   function render(st) {
     renderAuth(st);
     directUrl = directVncUrl(st);
     btnCopy.dataset.url = directUrl;
+    // 默认只监听本机：从远程面板打开时提前说清楚，别让用户对着“一直重连”猜
+    if (st.bind && isLoopback(st.bind) && !isLoopback(location.hostname)) {
+      setStatus("VNC 只监听 127.0.0.1，远程连不上", "err");
+      showPlaceholder("当前 vnc_bind 是 127.0.0.1，只有服务器本机能连 VNC。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把 vnc_password 从默认的 iris 换掉。", null);
+      return;
+    }
     if (!st.ready) {
       setStatus(st.error || "VNC 未就绪", "err");
       showPlaceholder(st.error || "VNC 服务未启动，点“启动 / 修复 VNC”。", st);

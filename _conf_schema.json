@@ -115,8 +115,9 @@
   "vnc_bind": {
     "description": "VNC 监听地址",
     "type": "string",
-    "default": "0.0.0.0",
-    "hint": "0.0.0.0 表示所有网卡，远程打开面板才能用内嵌 VNC；只在本机使用时改成 127.0.0.1 可显著缩小暴露面。"
+    "default": "127.0.0.1",
+    "obvious_hint": true,
+    "hint": "默认 127.0.0.1，只允许本机连接，局域网内其他人连不上。需要用远程面板打开内嵌 VNC 时，才改成 0.0.0.0；改之前先把 vnc_password 从默认的 iris 换掉。"
   },
   "vnc_public_url": {
     "description": "VNC 直连地址（可选）",

@@ -13,9 +13,9 @@ Input.* 回送鼠标键盘，浏览器打开地址即可看、可操作。
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
+import secrets
 import subprocess
 import sys
 import urllib.request
@@ -192,6 +192,20 @@ PAGE_HTML = """<!doctype html>
             background: #0b0c0f; outline: 1px solid #2a3050; }
   #hint { position: absolute; inset: 0; display: flex; align-items: center;
           justify-content: center; color: #67708a; }
+  #login { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center;
+           justify-content: center; background: #0f1220; }
+  #login.hidden { display: none; }
+  .login-box { width: min(340px, 86vw); display: flex; flex-direction: column; gap: 10px;
+               padding: 22px; background: #171b2d; border: 1px solid #2a3050; border-radius: 12px; }
+  .login-box h3 { margin: 0 0 2px; font-size: 15px; font-weight: 700; }
+  .login-box p { margin: 0 0 4px; color: #8b93ab; font-size: 12px; }
+  .login-box input { padding: 9px 11px; border-radius: 6px; border: 1px solid #2a3050;
+                     background: #0f1220; color: #e8eaf2; font: inherit; outline: none; }
+  .login-box input:focus { border-color: #4f7cff; }
+  .login-box button { padding: 9px; border-radius: 6px; border: 0; background: #4f7cff;
+                      color: #fff; font: inherit; cursor: pointer; }
+  .login-box button:disabled { opacity: .6; cursor: not-allowed; }
+  #loginErr { color: #ff6b6b; font-size: 12px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -203,6 +217,15 @@ PAGE_HTML = """<!doctype html>
 <div id="stage" style="position:relative">
   <img id="screen" alt="浏览器画面">
   <div id="hint">等待画面…</div>
+</div>
+<div id="login" class="hidden">
+  <div class="login-box">
+    <h3>需要密码</h3>
+    <p>输入插件配置里的调试密码（vnc_password）</p>
+    <input id="pwd" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="btnLogin">进入</button>
+    <div id="loginErr"></div>
+  </div>
 </div>
 <script>
 (() => {
@@ -301,7 +324,46 @@ PAGE_HTML = """<!doctype html>
     if (t) { send({ type: 'text', text: t }); e.preventDefault(); }
   });
 
-  connect();
+  const login = document.getElementById('login');
+  const pwd = document.getElementById('pwd');
+  const btnLogin = document.getElementById('btnLogin');
+  const loginErr = document.getElementById('loginErr');
+
+  async function tryLogin() {
+    btnLogin.disabled = true;
+    loginErr.textContent = '';
+    try {
+      const r = await fetch('/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd.value }),
+      });
+      if (r.ok) {
+        login.classList.add('hidden');
+        connect();
+      } else {
+        loginErr.textContent = '密码错误';
+        pwd.select();
+      }
+    } catch (e) {
+      loginErr.textContent = '连接失败：' + (e && e.message ? e.message : e);
+    } finally {
+      btnLogin.disabled = false;
+    }
+  }
+
+  btnLogin.addEventListener('click', tryLogin);
+  pwd.addEventListener('keydown', (e) => { if (e.key === 'Enter') tryLogin(); });
+
+  (async function boot() {
+    try {
+      const r = await fetch('/auth', { credentials: 'same-origin' });
+      const st = await r.json();
+      if (!st.need_password || st.logged_in) { connect(); return; }
+    } catch (e) {}
+    login.classList.remove('hidden');
+    pwd.focus();
+  })();
 })();
 </script>
 </body>
@@ -479,28 +541,49 @@ class _Server:
 def _make_app(srv: _Server, password: str = ""):
     from aiohttp import WSMsgType, web
 
+    sessions: set[str] = set()
+
+    def _logged_in(request) -> bool:
+        if not password:
+            return True
+        return request.cookies.get("dd_session", "") in sessions
+
     @web.middleware
-    async def basic_auth(request, handler):
-        # /health 供插件自己探活，不含敏感信息，不做认证
-        if not password or request.path == "/health":
+    async def guard(request, handler):
+        # 页面本身、登录接口、探活接口放行；其余（含 /ws）要登录
+        if request.path in ("/", "/auth", "/health"):
             return await handler(request)
-        header = request.headers.get("Authorization", "")
-        if header.startswith("Basic "):
-            try:
-                raw = base64.b64decode(header[6:]).decode("utf-8", "ignore")
-                _, _, given = raw.partition(":")
-                if given == password:
-                    return await handler(request)
-            except Exception:
-                pass
-        return web.Response(
-            status=401,
-            headers={"WWW-Authenticate": 'Basic realm="doubao_windows_debug"'},
-            text="需要密码",
-        )
+        if not _logged_in(request):
+            return web.json_response({"ok": False, "error": "需要密码"}, status=401)
+        return await handler(request)
 
     async def index(request):
         return web.Response(text=PAGE_HTML, content_type="text/html", charset="utf-8")
+
+    async def auth(request):
+        if not password:
+            return web.json_response({"ok": True, "need_password": False})
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        given = str((data or {}).get("password", ""))
+        if given != password:
+            await asyncio.sleep(0.4)          # 抑噪：拖慢爆破
+            return web.json_response({"ok": False, "error": "密码错误"}, status=401)
+        token = secrets.token_urlsafe(32)
+        sessions.add(token)
+        resp = web.json_response({"ok": True, "need_password": True})
+        resp.set_cookie("dd_session", token, httponly=True, samesite="Lax",
+                        max_age=86400, path="/")
+        return resp
+
+    async def auth_check(request):
+        return web.json_response({
+            "ok": True,
+            "need_password": bool(password),
+            "logged_in": _logged_in(request),
+        })
 
     async def health(request):
         # 未认证也能访问，只暴露最少信息
@@ -540,8 +623,10 @@ def _make_app(srv: _Server, password: str = ""):
             task.cancel()
         await srv.stop_screencast()
 
-    app = web.Application(middlewares=[basic_auth])
+    app = web.Application(middlewares=[guard])
     app.router.add_get("/", index)
+    app.router.add_post("/auth", auth)
+    app.router.add_get("/auth", auth_check)
     app.router.add_get("/ws", ws_handler)
     app.router.add_get("/health", health)
     app.on_startup.append(on_startup)

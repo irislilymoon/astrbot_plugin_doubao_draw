@@ -7,6 +7,12 @@
 - Linux 上 `headless` 配置不再生效（强制视为关闭）：此前 Linux + 默认配置连接外部常驻 Chromium 时，`_fit_window` 因该标志直接跳过，窗口保持 1050x880 不铺满 1440x900 虚拟屏，VNC 面板出现黑边；「浏览器窗口被关闭」的存活检查同样被跳过。`headless` 现在仅对 Windows 生效，与可见 Chrome 启动参数的既有语义一致
 - Linux 兜底拉起路径（Playwright `launch_persistent_context`）同步改为始终可见，与 `_recover` 子进程路径行为一致
 
+### 安全
+
+- VNC 内嵌静态服务默认只监听 `127.0.0.1`，避免手动调用时误用 `0.0.0.0`
+- 6081 不再返回 `Access-Control-Allow-Origin: *`；静态页只作为 iframe 加载，RFB 仍由 6080/websockify 负责
+- README 顶部增加“首次安装后立刻修改 `vnc_password`”的醒目提示
+
 ## [v0.1.8] - 2026-11-04
 
 ### 变更

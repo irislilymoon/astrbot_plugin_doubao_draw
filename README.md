@@ -125,7 +125,7 @@ chrome.exe --remote-debugging-port=9222 --user-data-dir="<插件数据目录>\pr
 | cooldown | 单用户冷却，默认 20 秒 |
 | daily_limit | 每人每日张数，0 为不限 |
 | max_refs | 参考图上限 |
-| headless | 默认 true；Windows 的 Win 调试默认固定无头，只有点击「打开浏览器」会拉起可见 Chrome。此开关只影响 Linux/容器的 VNC 相关启动路径 |
+| headless | 默认 true；仅 Windows 生效。Windows 的 Win 调试默认固定无头，只有点击「打开浏览器」会拉起可见 Chrome。Linux/容器的 VNC 流程始终可见，此开关被忽略 |
 | chromium_path | 默认 `/usr/bin/chromium`；路径无效时自动查找 Chrome、Edge、Playwright Chromium，三者都没有才会启动失败 |
 | profile_dir | 登录态目录，留空用插件数据目录 |
 | chat_url | 豆包对话页 |

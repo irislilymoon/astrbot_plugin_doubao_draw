@@ -19,6 +19,11 @@ class BrowserManager:
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self.executable_path = executable_path or None
         self.headless = headless
+        # headless 仅对 Windows 生效：Linux 的 VNC 流程始终需要可见窗口，
+        # 若沿用该标志会跳过窗口拉满（_fit_window）与「窗口被关闭」存活检查，
+        # 导致外部常驻 Chromium 连上后窗口保持 1050x880 不铺满虚拟屏
+        if os.name != "nt":
+            self.headless = False
         self.log = logger
         self.cdp_url = cdp_url or "http://127.0.0.1:9222"
         self.startup_url = startup_url

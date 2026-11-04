@@ -28,7 +28,9 @@
 ## 安全提示（装完先读这段）
 
 > [!WARNING]
-> **VNC 默认密码是 `iris`，装好后第一件事就是改掉它。**
+> **调试密码默认是 `iris`，装好后第一件事就是改掉它。**
+>
+> VNC 调试和 Win 调试共用同一个密码（`vnc_password`）和监听地址（`vnc_bind`），改一处两边同时生效。
 >
 > 插件拉起的 x11vnc 默认只监听 `127.0.0.1:5900`，noVNC/websockify 与面板内嵌静态页同样默认只监听
 > `127.0.0.1`，**默认只有本机能连**。如果你为了用远程面板把 `vnc_bind` 改成 `0.0.0.0`，
@@ -53,9 +55,11 @@
 > `data/config/astrbot_plugin_doubao_draw_config.json` 里的 `vnc_password` 仍是明文，
 > 任何能读到该文件的人都能看到密码，注意文件权限与备份去向。
 
-## VNC 图形调试
+## 图形调试
 
-插件 WebUI 里有「VNC 调试」页面：
+插件 WebUI 的调试页由 `debug_platform` 决定只显示一个：Linux / 容器显示「VNC 调试」，Windows 显示「Win 调试」。两者能力一致——看画面、点鼠标、敲键盘、复制直连地址在浏览器里打开；密码和监听地址共用同一套配置。
+
+### Linux / 容器：VNC
 
 - 已有 Xvfb / x11vnc / noVNC 直接复用
 - 缺哪个自动拉起哪个；浏览器窗口也会由兜底任务恢复
@@ -67,6 +71,33 @@
 - 镜像缺少 `Xvfb` / `x11vnc` / `novnc` / `websockify` 时需要先安装
 - Docker 部署需要映射 `6080`（noVNC/websockify）和 `6081`（面板内嵌静态服务）；插件会复用已有服务，缺失时自动启动
 - 已经跑着无密码的 x11vnc 时，插件检测到认证方式与配置不一致会重启该进程，避免“设置了密码却仍然裸奔”
+
+### Windows：Win 调试
+
+Windows 没有 X11，`x11vnc` / `Xvfb` / noVNC 这套跑不起来，VNC 调试页会直接报「缺少 x11vnc」。插件改用 CDP 取画面，逻辑和 VNC 页完全对齐：
+
+- 原理：连 `127.0.0.1:9222`（插件启动 Chromium 时开的调试端口），用 `Page.startScreencast` 持续收 JPEG 帧，用 `Input.*` 把鼠标键盘回送；不依赖任何 X11 组件
+- 浏览器打开 `http://127.0.0.1:6090` 即可查看并操作；面板内嵌同一个地址，也可以复制直连地址到任意浏览器
+- 画面只在**有变化**时推送，页面静止时零流量；顶栏显示「画面静止」是正常现象，不是连接断了
+- 密码与监听地址与 VNC 共用：`vnc_password_enabled` / `vnc_password` / `vnc_bind`；密码仍是默认 `iris` 时同样强制只监听 `127.0.0.1`
+- 需要密码时，浏览器会弹 HTTP 基础认证框：用户名随意填，密码填 `vnc_password`
+- 关掉 `winvnc_auto_start` 后不自动拉起，可到「Win 调试」页点「启动 / 修复」
+- 面板是 HTTPS 而画面服务是 HTTP 时，浏览器会拦截内嵌，此时用「复制直连地址」在新窗口打开
+
+Windows 上还有两处必须手动配，否则浏览器根本起不来：
+
+| 项 | 怎么改 |
+| --- | --- |
+| `chromium_path` | 指向本机实际存在的 `chrome.exe`，例如 `C:\Users\<你>\AppData\Local\ms-playwright\chromium-1248\chrome-win64\chrome.exe`。默认值 `/usr/bin/chromium` 在 Windows 上不存在 |
+| `headless` | 想直接在桌面看到窗口就设 `false`；设 `true` 则完全靠「Win 调试」页看画面 |
+
+调试时可以手动起一个带调试端口的浏览器，插件启动时会优先接管它，不会另起一个：
+
+```
+chrome.exe --remote-debugging-port=9222 --user-data-dir="<插件数据目录>\profile" https://www.doubao.com/chat/
+```
+
+这条命令的好处是可以随时开关：要调试就起，调试完关掉，插件下次按 `headless` 配置自己拉。
 
 ## 失败怎么处理
 
@@ -91,11 +122,15 @@
 | vnc_embed_port | 面板内嵌静态端口，默认 6081 |
 | vnc_rfb_port | x11vnc 端口，默认 5900 |
 | vnc_display | X 显示，默认 :99 |
+| debug_platform | 调试页显示：`auto` 按系统判断 / `linux` 用 VNC 调试 / `windows` 用 Win 调试，默认 `auto`；改完需重载插件 |
+| winvnc_auto_start | Windows 上自动拉起画面服务，默认开 |
+| winvnc_port | Win 调试画面端口，默认 6090；监听地址受 `vnc_bind` 控制，默认只有本机能连 |
+| winvnc_cdp_port | 浏览器调试端口（CDP），默认 9222，画面服务靠它取帧和回送输入 |
 | cooldown | 单用户冷却，默认 20 秒 |
 | daily_limit | 每人每日张数，0 为不限 |
 | max_refs | 参考图上限 |
-| headless | 默认 true |
-| chromium_path | 默认 /usr/bin/chromium |
+| headless | 默认 true；Windows 想直接在桌面看到浏览器窗口就改 false |
+| chromium_path | 默认 `/usr/bin/chromium`；**Windows 必须改成本机 `chrome.exe` 的绝对路径**，否则浏览器起不来 |
 | profile_dir | 登录态目录，留空用插件数据目录 |
 | chat_url | 豆包对话页 |
 | browser_watchdog | 浏览器兜底自愈，默认开 |
@@ -112,6 +147,7 @@
 ## 注意
 
 - 这是网页自动化，不是官方接口；豆包改版会失效，账号也可能被风控。
-- **VNC 端口（5900/6080/6081）不要裸奔在公网**：默认只监听 `127.0.0.1`；改成 `0.0.0.0` 之前必须先换掉默认密码 `iris`。
+- **调试端口不要裸奔在公网**：Linux 侧是 `5900` / `6080` / `6081`，Windows 侧是 `6090`；默认都只监听 `127.0.0.1`；改成 `0.0.0.0` 之前必须先换掉默认密码 `iris`。
+- Windows 上 VNC 调试页不可用是设计限制，不是故障：系统没有 X11，`x11vnc` / `Xvfb` 无从运行。用「Win 调试」页，看画面和操作的能力等价。
 - 默认 20 秒冷却、每日限额，只适合自己或小群用。
 - 2C2G 机器跑 Chromium 偏紧，出现 OOM 就把 `renderer-process-limit` 调小或加 swap。

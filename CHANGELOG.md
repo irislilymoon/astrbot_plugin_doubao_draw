@@ -7,6 +7,7 @@
 - Windows 调试页：新增 `pages/win` 与 `dd_winvnc.py`，用 CDP 取画面帧并回送鼠标键盘，浏览器打开 `http://127.0.0.1:6090` 即可查看和操作插件正在用的浏览器
 - 新增 `debug_platform` 配置（`auto` / `linux` / `windows`），按当前系统只显示对应的调试页：不适用的页目录改名成 `.vnc` / `.win`，AstrBot 扫描时自动跳过
 - 新增 `winvnc_port`、`winvnc_cdp_port`、`winvnc_auto_start` 配置项
+- README 的「VNC 图形调试」改写为「图形调试」，分 Linux（VNC）/ Windows（Win 调试）两节，补充 Windows 必改项 `chromium_path`、`headless` 与调试端口说明
 
 ### 变更
 

@@ -55,6 +55,20 @@
   .hint.err { color: var(--err); font-weight: 600; }
   .hint.warn { color: var(--warn); }
   .frame-wrap { flex: 1 1 auto; min-height: 0; background: var(--bg); position: relative; }
+  .modal {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    background: rgba(8, 11, 20, .6);
+  }
+  .modal.hidden { display: none; }
+  .modal-box {
+    width: min(420px, 88vw); background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+    display: flex; flex-direction: column; gap: 12px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  }
+  .modal-box h3 { margin: 0; font-size: 15px; }
+  .modal-box p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
   iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
   .placeholder {
     position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -90,6 +104,16 @@
     </div>
   </div>
 
+  <div id="pwdTip" class="modal hidden">
+    <div class="modal-box">
+      <h3>VNC 还在用默认密码</h3>
+      <p>默认密码是公开的，局域网里谁都知道。当前只允许本机访问；到插件配置里改成自己的密码之后，才能按 vnc_bind 放开远程。</p>
+      <div class="modal-actions">
+        <button id="pwdTipOk" class="primary">知道了</button>
+      </div>
+    </div>
+  </div>
+
 <script>
 (function () {
   const dot = document.getElementById("dot");
@@ -102,6 +126,7 @@
   const btnReconnect = document.getElementById("btnReconnect");
   const btnCopy = document.getElementById("btnCopy");
   const authHint = document.getElementById("authHint");
+  const pwdTip = document.getElementById("pwdTip");
   let lastEmbedUrl = "";
   let directUrl = "";
   let loading = false;
@@ -189,27 +214,29 @@
 
   function renderAuth(st) {
     const enabled = !!st.auth_enabled;
-    const isDefault = !!st.password_is_default;
+    const local = isLoopback(st.bind);
     if (!enabled) {
       authHint.className = "hint err";
-      if (st.password_set) {
-        authHint.textContent = "密码已填但开关是关的：当前仍无密码";
-        authHint.title = "vnc_password_enabled 关掉时，vnc_password 填了也不生效。要到插件设置里打开「VNC 连接需要密码」并保存。";
-      } else {
-        authHint.textContent = "未启用密码：5900 / 6080 对内网完全开放";
-        authHint.title = "任何能连到这两个端口的人都能直接操作这个浏览器，包括已登录的豆包账号、Cookie 和聊天记录。仅限完全可信的内网使用。";
-      }
+      authHint.textContent = local ? "未启用密码 · 仅本机" : "未启用密码 · 允许远程";
+      authHint.title = local
+        ? "VNC 没有密码，但只监听 127.0.0.1，只有本机能连。"
+        : "VNC 没有密码且对所有网卡开放，任何能连到 5900 / 6080 的人都能直接操作这个浏览器。";
       return;
     }
-    if (isDefault) {
-      authHint.className = "hint warn";
-      authHint.textContent = "默认密码 iris 未修改：已强制只允许本机连接";
-      authHint.title = "密码还是公开的 iris，插件强制只监听 127.0.0.1，远程连不上。到插件设置把 vnc_password 改成自己的密码后，vnc_bind 才会按配置生效。";
-      return;
-    }
-    authHint.className = "hint";
-    authHint.textContent = "已启用密码";
-    authHint.title = "";
+    authHint.className = local ? "hint" : "hint warn";
+    authHint.textContent = local ? "仅本机访问" : "允许远程访问";
+    authHint.title = local
+      ? "VNC 只监听 127.0.0.1，只有服务器本机能连。要远程使用，把 vnc_bind 改成 0.0.0.0。"
+      : "VNC 监听所有网卡，远程可以连接。请确保密码足够强，并用防火墙限制来源。";
+  }
+
+  function maybePasswordTip(st) {
+    if (!st.password_is_default) return;
+    try {
+      if (localStorage.getItem("vnc_pwd_tip_v1")) return;
+    } catch (e) {}
+    pwdTip.classList.remove("hidden");
+    try { localStorage.setItem("vnc_pwd_tip_v1", "1"); } catch (e) {}
   }
 
   function isLoopback(host) {
@@ -219,6 +246,7 @@
 
   function render(st) {
     renderAuth(st);
+    maybePasswordTip(st);
     directUrl = directVncUrl(st);
     btnCopy.dataset.url = directUrl;
     // 默认只监听本机：从远程面板打开时提前说清楚，别让用户对着“一直重连”猜
@@ -227,8 +255,8 @@
       setStatus(locked ? "默认密码未修改，VNC 仅限本机" : "VNC 只监听 127.0.0.1，远程连不上", "err");
       showPlaceholder(
         locked
-          ? "vnc_password 还是默认的 iris，插件已强制只监听 127.0.0.1，远程连不上。请先到插件配置改掉密码，再把 vnc_bind 改成 0.0.0.0。"
-          : "当前 vnc_bind 是 127.0.0.1，只有服务器本机能连 VNC。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把 vnc_password 从默认的 iris 换掉。",
+          ? "VNC 还在用默认密码，插件已强制只监听 127.0.0.1，远程连不上。请先到插件配置改掉密码，再把 vnc_bind 改成 0.0.0.0。"
+          : "当前 vnc_bind 是 127.0.0.1，只有服务器本机能连 VNC。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把默认密码换掉。",
         null
       );
       return;
@@ -283,6 +311,8 @@
       btnEnsure.disabled = false;
     }
   }
+
+  document.getElementById("pwdTipOk").addEventListener("click", () => pwdTip.classList.add("hidden"));
 
   btnEnsure.addEventListener("click", () => refresh(true));
   btnRefresh.addEventListener("click", () => refresh(false));

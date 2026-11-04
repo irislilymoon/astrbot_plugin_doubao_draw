@@ -1,5 +1,24 @@
 # 更新日志
 
+## [v0.1.8] - 2026-11-04
+
+### 变更
+
+- Windows 调试页移除内嵌推流、6090 画面服务和 `dd_winvnc.py`，只保留顶部横幅与「打开浏览器」
+- 「打开浏览器」会关闭当前无头浏览器，用同一个 profile 拉起可见的 Chrome for Testing
+- Win 页新增密码锁：复用 `vnc_password` / `vnc_password_enabled`，服务端校验后下发短期解锁 token；token 只存页面内存，未解锁不能调用打开接口
+- 浏览器路径自动探测 Chrome、Edge 和 Playwright 自带 Chromium；`chromium_path` 留空或失效不再直接导致启动失败
+- 可见 Chrome 启动参数移除 Windows 不支持的 `--no-sandbox`、`--disable-setuid-sandbox`、`--disable-dev-shm-usage`，避免命令行标记警告
+- VNC 顶栏显示「仅本机」时补充远程开启说明；默认密码被强制本机时提示先改密码，再把 `vnc_bind` 改为 `0.0.0.0`
+
+### 移除
+
+- 移除 `winvnc_auto_start`、`winvnc_port` 配置项，Windows 不再监听 6090
+
+### 修复
+
+- Windows 未安装 Chrome 时可通过系统 Edge 或 Playwright Chromium 启动浏览器
+
 ## [v0.1.7] - 2026-11-04
 
 ### 新增

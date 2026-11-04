@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -30,7 +31,7 @@ _BASE = Path(__file__).parent
 if str(_BASE) not in sys.path:
     sys.path.insert(0, str(_BASE))
 
-for _m in ("dd_selectors", "dd_browser", "dd_store", "dd_doubao", "dd_vnc"):
+for _m in ("dd_selectors", "dd_browser", "dd_store", "dd_doubao", "dd_vnc", "dd_winvnc"):
     sys.modules.pop(_m, None)
 
 import dd_browser  # noqa: E402
@@ -38,6 +39,7 @@ import dd_doubao  # noqa: E402
 import dd_selectors  # noqa: E402
 import dd_store  # noqa: E402
 import dd_vnc  # noqa: E402
+import dd_winvnc  # noqa: E402
 
 RATIO_RE = re.compile(r"^(\d{1,2}:\d{1,2})[\s,，、]+(.+)$", re.S)
 CMD_RE = re.compile(r"^[/!.]?\s*(?:doubao_draw|draw|绘图|画图)\s*", re.I)
@@ -97,13 +99,25 @@ class DoubaoDrawPlugin(Star):
             bind=str(config.get("vnc_bind") or "127.0.0.1"),
         )
         self._register_vnc_api()
+        self.winvnc = dd_winvnc.WinVncManager(
+            port=int(config.get("winvnc_port", 6090)),
+            cdp_url=f"http://127.0.0.1:{int(config.get('winvnc_cdp_port', 9222))}",
+            logger=logger,
+            password=str(config.get("vnc_password") or dd_vnc.VncManager.DEFAULT_PASSWORD),
+            auth_enabled=bool(config.get("vnc_password_enabled", True)),
+            bind=str(config.get("vnc_bind") or "127.0.0.1"),
+        )
+        self._sync_debug_pages()
+        self._register_winvnc_api()
         self._last_at: dict[str, float] = {}
         self._pending_code: dict[str, float] = {}
         self._pending_refs: dict[str, tuple[float, list[bytes]]] = {}
         self._watchdog_task: asyncio.Task | None = None
         self._vnc_task: asyncio.Task | None = None
+        self._winvnc_task: asyncio.Task | None = None
         self._llm_switch_task: asyncio.Task | None = None
         self._start_vnc_watchdog()
+        self._start_winvnc_autostart()
         self._start_watchdog_if_needed()
         self._schedule_llm_tool_switch()
 
@@ -349,6 +363,37 @@ class DoubaoDrawPlugin(Star):
             return False
         return True
 
+    def _sync_debug_pages(self):
+        """只保留当前系统对应的调试页目录。
+
+        AstrBot 扫描 pages/ 下的子目录生成侧栏页签，且会跳过 "." 开头的名字，
+        所以把不适用的那个改成 ".vnc" / ".win" 就能隐藏，切回来再改回去。
+        """
+        pages = Path(__file__).resolve().parent / "pages"
+        if not pages.is_dir():
+            return
+        mode = str(self.config.get("debug_platform", "auto") or "auto").strip().lower()
+        if mode not in ("linux", "windows"):
+            mode = "windows" if sys.platform.startswith("win") else "linux"
+        want, hide = ("win", "vnc") if mode == "windows" else ("vnc", "win")
+
+        shown, parked = pages / want, pages / f".{want}"
+        try:
+            if parked.is_dir() and not shown.exists():
+                parked.rename(shown)
+        except Exception as e:
+            logger.warning(f"[doubao_draw] 恢复调试页 {want} 失败：{e}")
+
+        src, dst = pages / hide, pages / f".{hide}"
+        try:
+            if src.is_dir():
+                if dst.exists():
+                    shutil.rmtree(dst, ignore_errors=True)
+                src.rename(dst)
+                logger.info(f"[doubao_draw] 调试页显示：{want}（已隐藏 {hide}）")
+        except Exception as e:
+            logger.warning(f"[doubao_draw] 隐藏调试页 {hide} 失败：{e}")
+
     def _register_vnc_api(self):
         try:
             self.context.register_web_api(
@@ -377,6 +422,57 @@ class DoubaoDrawPlugin(Star):
             return {"status": "ok", "data": await self.vnc.ensure()}
         except Exception as e:
             return {"status": "error", "message": str(e), "data": {}}
+
+    def _register_winvnc_api(self):
+        try:
+            self.context.register_web_api(
+                f"/{PLUGIN_NAME}/winvnc/status",
+                self._winvnc_status,
+                ["GET"],
+                "Windows debug status",
+            )
+            self.context.register_web_api(
+                f"/{PLUGIN_NAME}/winvnc/ensure",
+                self._winvnc_ensure,
+                ["POST"],
+                "Ensure Windows debug service",
+            )
+        except Exception as e:
+            logger.warning(f"[doubao_draw] Win 调试 API 注册失败：{e}")
+
+    async def _winvnc_status(self):
+        try:
+            return {"status": "ok", "data": await self.winvnc.status()}
+        except Exception as e:
+            return {"status": "error", "message": str(e), "data": {}}
+
+    async def _winvnc_ensure(self):
+        try:
+            return {"status": "ok", "data": await self.winvnc.ensure()}
+        except Exception as e:
+            return {"status": "error", "message": str(e), "data": {}}
+
+    def _start_winvnc_autostart(self):
+        if not self.config.get("winvnc_auto_start", True):
+            return
+        try:
+            self._winvnc_task = asyncio.create_task(self._winvnc_autostart())
+        except RuntimeError:
+            self._winvnc_task = None
+
+    async def _winvnc_autostart(self):
+        """等浏览器就绪后再拉画面服务，避免一启动就报连不上 9222。"""
+        await asyncio.sleep(4)
+        try:
+            st = await self.winvnc.ensure()
+            if st.get("ready"):
+                logger.info(
+                    f"[doubao_draw] Win 调试已就绪：http://127.0.0.1:{st.get('web_port')}"
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[doubao_draw] Win 调试服务自动启动失败：{e}")
 
     def _start_watchdog_if_needed(self):
         if not self.config.get("browser_watchdog", True):

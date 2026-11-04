@@ -152,5 +152,34 @@
     "description": "X 显示",
     "type": "string",
     "default": ":99"
+  },
+  "debug_platform": {
+    "description": "调试页面显示",
+    "type": "string",
+    "options": [
+      "auto",
+      "linux",
+      "windows"
+    ],
+    "default": "auto",
+    "hint": "决定侧栏显示「VNC 调试」还是「Win 调试」。auto 按当前系统自动判断；两边只是画面来源不同，密码、监听地址等配置完全共用。修改后需重载插件"
+  },
+  "winvnc_auto_start": {
+    "description": "自动启动 Win 调试",
+    "type": "bool",
+    "default": true,
+    "hint": "仅 Windows 有效。插件启动后自动拉起画面服务，面板「Win 调试」页可直接看和操作浏览器"
+  },
+  "winvnc_port": {
+    "description": "Win 调试画面端口",
+    "type": "int",
+    "default": 6090,
+    "hint": "浏览器打开 http://127.0.0.1:该端口 即可查看并操作浏览器，只监听本机"
+  },
+  "winvnc_cdp_port": {
+    "description": "调试端口（CDP）",
+    "type": "int",
+    "default": 9222,
+    "hint": "插件启动 Chromium 时使用的远程调试端口，画面服务靠它取帧和回送输入"
   }
 }

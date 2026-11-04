@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Win 调试</title>
+<style>
+  :root {
+    --bg: #0f1220;
+    --panel: #171b2d;
+    --text: #e8eaf2;
+    --muted: #8b93ab;
+    --line: #2a3050;
+    --ok: #39d98a;
+    --warn: #f7b955;
+    --err: #ff6b6b;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f8;
+      --panel: #ffffff;
+      --text: #1b2030;
+      --muted: #67708a;
+      --line: #dfe4f2;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  .bar {
+    flex: none; display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .title { font-weight: 700; font-size: 15px; white-space: nowrap; flex: none; }
+  .status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); min-width: 0; flex: 0 1 auto; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+  .dot.ok { background: var(--ok); }
+  .dot.err { background: var(--err); }
+  .status span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spacer { flex: 1 1 auto; min-width: 0; }
+  button {
+    appearance: none; border: 1px solid var(--line); background: transparent;
+    color: var(--text); padding: 6px 11px; border-radius: 8px; cursor: pointer;
+    font: inherit; white-space: nowrap; flex: none;
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: #4f7cff; border-color: #4f7cff; color: #fff; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+  .hint.err { color: var(--err); font-weight: 600; }
+  .hint.warn { color: var(--warn); }
+  .frame-wrap { flex: 1 1 auto; min-height: 0; background: var(--bg); position: relative; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  .modal {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    background: rgba(8, 11, 20, .6);
+  }
+  .modal.hidden { display: none; }
+  .modal-box {
+    width: min(420px, 88vw); background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+    display: flex; flex-direction: column; gap: 12px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, .45);
+  }
+  .modal-box h3 { margin: 0; font-size: 15px; }
+  .modal-box p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 10px; color: var(--muted); padding: 24px; text-align: center;
+  }
+  .placeholder.hidden { display: none; }
+  .placeholder a { color: #7ea0ff; word-break: break-all; }
+  .placeholder code {
+    display: block; max-width: min(900px, 90vw); color: var(--text);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; word-break: break-all; user-select: all;
+  }
+  @media (max-width: 760px) {
+    .bar { flex-wrap: wrap; row-gap: 8px; }
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div class="title">Win 调试</div>
+    <div class="status"><i id="dot" class="dot"></i><span id="statusText">检测中…</span></div>
+    <div class="spacer"></div>
+    <span class="hint" id="authHint">检测中…</span>
+    <button id="btnEnsure" class="primary">启动 / 修复</button>
+    <button id="btnRefresh">重新检测</button>
+    <button id="btnReconnect">重新连接</button>
+    <button id="btnCopy">复制直连地址</button>
+  </div>
+  <div class="frame-wrap">
+    <iframe id="frame" title="Win"></iframe>
+    <div id="placeholder" class="placeholder">
+      <div id="placeholderText">正在准备画面…</div>
+    </div>
+  </div>
+
+  <div id="pwdTip" class="modal hidden">
+    <div class="modal-box">
+      <h3>还在用默认密码</h3>
+      <p>默认密码是公开的，局域网里谁都知道。当前只允许本机访问；到插件配置里改成自己的密码之后，才能按 vnc_bind 放开远程。</p>
+      <div class="modal-actions">
+        <button id="pwdTipOk" class="primary">知道了</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const dot = document.getElementById("dot");
+  const statusText = document.getElementById("statusText");
+  const frame = document.getElementById("frame");
+  const placeholder = document.getElementById("placeholder");
+  const placeholderText = document.getElementById("placeholderText");
+  const btnEnsure = document.getElementById("btnEnsure");
+  const btnRefresh = document.getElementById("btnRefresh");
+  const btnReconnect = document.getElementById("btnReconnect");
+  const btnCopy = document.getElementById("btnCopy");
+  const authHint = document.getElementById("authHint");
+  const pwdTip = document.getElementById("pwdTip");
+  let lastEmbedUrl = "";
+  let directUrl = "";
+  let loading = false;
+
+  function setStatus(text, kind) {
+    statusText.textContent = text;
+    dot.className = "dot" + (kind ? " " + kind : "");
+  }
+
+  function unwrap(resp) {
+    if (!resp) return {};
+    return resp.data || resp.result || resp;
+  }
+
+  async function waitBridge(ms) {
+    const deadline = Date.now() + (ms || 4000);
+    while (Date.now() < deadline) {
+      const b = window.AstrBotPluginView || window.AstrBotPluginPage;
+      if (b) return b;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  }
+
+  async function call(path, method) {
+    const bridge = await waitBridge(4000);
+    if (!bridge) throw new Error("插件页桥接未加载，请刷新页面");
+    if (bridge.ready) {
+      await Promise.race([
+        bridge.ready(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("插件页桥接未就绪")), 6000)),
+      ]);
+    }
+    if (method === "POST" && bridge.apiPost) return await bridge.apiPost(path, {});
+    if (bridge.apiGet) return await bridge.apiGet(path, {});
+    throw new Error("插件页桥接不支持 API");
+  }
+
+  function hostName() {
+    return location.hostname || "127.0.0.1";
+  }
+
+  function proto() {
+    return location.protocol === "https:" ? "https:" : "http:";
+  }
+
+  function directWinUrl(st) {
+    if (st.public_url) return st.public_url;
+    return `${proto()}//${hostName()}:${st.web_port || 6090}/`;
+  }
+
+  function embedWinUrl(st) {
+    return `${proto()}//${hostName()}:${st.web_port || 6090}/`;
+  }
+
+  function showPlaceholder(text, st) {
+    placeholder.classList.remove("hidden");
+    placeholderText.textContent = text;
+    while (placeholderText.nextSibling) {
+      placeholder.removeChild(placeholderText.nextSibling);
+    }
+    if (st) {
+      const code = document.createElement("code");
+      code.textContent = directUrl;
+      placeholder.appendChild(code);
+      const a = document.createElement("a");
+      a.href = directUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = "在新窗口打开直连画面";
+      placeholder.appendChild(a);
+    }
+    if (lastEmbedUrl) {
+      frame.removeAttribute("src");
+      lastEmbedUrl = "";
+    }
+  }
+
+  function isLoopback(host) {
+    const h = (host || "").trim().toLowerCase();
+    return h === "127.0.0.1" || h === "localhost" || h === "::1";
+  }
+
+  function renderHint(st) {
+    if (!st.supported) {
+      authHint.className = "hint warn";
+      authHint.textContent = "仅 Windows 需要";
+      authHint.title = "Linux/容器环境请把 debug_platform 切到 linux，改用 VNC 调试页。";
+      return;
+    }
+    const enabled = !!st.auth_enabled;
+    const local = isLoopback(st.bind);
+    if (!enabled) {
+      authHint.className = "hint err";
+      authHint.textContent = local ? "未启用密码 · 仅本机" : "未启用密码 · 允许远程";
+      authHint.title = local
+        ? "画面服务没有密码，但只监听 127.0.0.1，只有本机能连。"
+        : "画面服务没有密码且对所有网卡开放，任何能连到这个端口的人都能直接操作这个浏览器。";
+      return;
+    }
+    authHint.className = local ? "hint" : "hint warn";
+    authHint.textContent = local ? "仅本机访问" : "允许远程访问";
+    authHint.title = local
+      ? "画面服务只监听 127.0.0.1，只有本机能连。要远程使用，把 vnc_bind 改成 0.0.0.0。"
+      : "画面服务监听所有网卡，远程可以连接。打开时会要求输入密码。";
+  }
+
+  function maybePasswordTip(st) {
+    if (!st.password_is_default) return;
+    try {
+      if (localStorage.getItem("winvnc_pwd_tip_v1")) return;
+    } catch (e) {}
+    pwdTip.classList.remove("hidden");
+    try { localStorage.setItem("winvnc_pwd_tip_v1", "1"); } catch (e) {}
+  }
+
+  function render(st) {
+    renderHint(st);
+    maybePasswordTip(st);
+    directUrl = directWinUrl(st);
+    btnCopy.dataset.url = directUrl;
+
+    if (!st.supported) {
+      setStatus("当前系统不需要", "warn");
+      showPlaceholder("这是 Windows 专用调试方式。Linux 或容器环境请把 debug_platform 切到 linux。", null);
+      return;
+    }
+    if (st.bind && isLoopback(st.bind) && !isLoopback(location.hostname)) {
+      const locked = !!st.default_password_locked;
+      setStatus(locked ? "默认密码未修改，画面服务仅限本机" : "画面服务只监听 127.0.0.1，远程连不上", "err");
+      showPlaceholder(
+        locked
+          ? "还在用默认密码，插件已强制只监听 127.0.0.1，远程连不上。请先到插件配置改掉密码，再把 vnc_bind 改成 0.0.0.0。"
+          : "当前 vnc_bind 是 127.0.0.1，只有本机能连。要在远程面板里用，请到插件配置把 vnc_bind 改成 0.0.0.0，并先把默认密码换掉。",
+        null
+      );
+      return;
+    }
+    if (!st.ready) {
+      setStatus(st.error || "画面服务未启动", "err");
+      showPlaceholder(st.error || "画面服务未启动，点“启动 / 修复”。", st);
+      return;
+    }
+    const embed = embedWinUrl(st);
+    if (location.protocol === "https:" && embed.startsWith("http:")) {
+      setStatus("HTTPS 面板无法嵌入 HTTP 画面", "err");
+      showPlaceholder("当前面板是 HTTPS，浏览器会拦截 HTTP 画面嵌入。请用 HTTP 打开面板，或配 HTTPS 反向代理。", st);
+      return;
+    }
+    setStatus("画面服务已就绪", "ok");
+    placeholder.classList.add("hidden");
+    if (lastEmbedUrl !== embed) {
+      frame.src = embed;
+      lastEmbedUrl = embed;
+    }
+  }
+
+  async function refresh(ensure) {
+    if (loading) return;
+    loading = true;
+    btnEnsure.disabled = true;
+    try {
+      setStatus(ensure ? "正在启动画面服务…" : "检测中…");
+      let st = unwrap(await call("winvnc/status", "GET"));
+      if (ensure && (!st.ready || !st.embed_ready)) {
+        st = unwrap(await call("winvnc/ensure", "POST"));
+      }
+      render(st);
+      if (ensure && (!st.ready || !st.embed_ready) && !st.error) {
+        setTimeout(() => refresh(false), 3000);
+      }
+    } catch (e) {
+      console.error(e);
+      setStatus("检测失败", "err");
+      showPlaceholder("检测失败：" + (e && e.message ? e.message : e), null);
+    } finally {
+      loading = false;
+      btnEnsure.disabled = false;
+    }
+  }
+
+  document.getElementById("pwdTipOk").addEventListener("click", () => pwdTip.classList.add("hidden"));
+
+  btnEnsure.addEventListener("click", () => refresh(true));
+  btnRefresh.addEventListener("click", () => refresh(false));
+  btnReconnect.addEventListener("click", () => {
+    if (!lastEmbedUrl) {
+      refresh(true);
+      return;
+    }
+    const base = lastEmbedUrl;
+    lastEmbedUrl = "";
+    frame.src = base + (base.includes("?") ? "&" : "?") + "_t=" + Date.now();
+    lastEmbedUrl = frame.src;
+  });
+  btnCopy.addEventListener("click", async () => {
+    const url = btnCopy.dataset.url || directUrl;
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      const old = btnCopy.textContent;
+      btnCopy.textContent = "已复制";
+      setTimeout(() => (btnCopy.textContent = old), 1200);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e2) {}
+      ta.remove();
+    }
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => refresh(true));
+  } else {
+    refresh(true);
+  }
+})();
+</script>
+</body>
+</html>

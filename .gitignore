@@ -7,3 +7,6 @@ vnc_logs/
 daily_count.json
 .DS_Store
 Thumbs.db
+
+# 开发过程文件
+_tmp_*

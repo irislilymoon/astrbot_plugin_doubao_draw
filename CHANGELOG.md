@@ -1,5 +1,12 @@
 # 更新日志
 
+## [v0.2.1] - 2026-11-05
+
+### 修复
+
+- 恢复 6081 内嵌静态服务的 CORS 响应头（`Access-Control-Allow-Origin` 等）。v0.2.0 移除该头后，AstrBot 面板内嵌画面在**所有环境**下失效：面板用 `sandbox="allow-scripts allow-forms allow-downloads"`（无 `allow-same-origin`）渲染插件页，沙箱会继承到嵌套 iframe，页面处于匿名源；`viewer.html` 的 `<script type="module"> import RFB from './core/rfb.js'` 在匿名源下按跨域加载，缺 ACAO 直接失败，整页 JS 不执行，画面永远停在静态文案「正在连接 VNC…」，连 WebSocket 都不会发出。直连 `6080/vnc.html` 不受影响，容易误判成网络问题
+- 6081 只提供 noVNC 静态资源，不含 Cookie、凭据与 RFB 通道，恢复 ACAO 不扩大实际暴露面；监听地址默认值仍保持 `127.0.0.1`
+
 ## [v0.2.0] - 2026-11-05
 
 ### 修复
@@ -10,7 +17,7 @@
 ### 安全
 
 - VNC 内嵌静态服务默认只监听 `127.0.0.1`，避免手动调用时误用 `0.0.0.0`
-- 6081 不再返回 `Access-Control-Allow-Origin: *`；静态页只作为 iframe 加载，RFB 仍由 6080/websockify 负责
+- 6081 不再返回 `Access-Control-Allow-Origin: *`；静态页只作为 iframe 加载，RFB 仍由 6080/websockify 负责（**v0.2.1 已回退此项，见上**）
 - README 顶部增加“首次安装后立刻修改 `vnc_password`”的醒目提示
 
 ## [v0.1.8] - 2026-11-04
